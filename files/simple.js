@@ -68,8 +68,9 @@ function SimpleCompEngine(options) {
 	this.parentNode.insertBefore(this.domNode,this.nextSibling);
 	this.widget.domNodes.push(this.domNode);
 
-	// add Completion popup
-    this._completion = new Completion( this.widget, this.domNode, this._configOptions );
+    // add Completion popup
+    console.log("SimpleCompEngine initializing")
+    this._completion = new Completion(this.widget, this.domNode, this._configOptions);
 }
 
 /*

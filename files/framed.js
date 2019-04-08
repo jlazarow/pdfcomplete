@@ -110,6 +110,7 @@ function FramedCompEngine(options) {
     this.iframeDoc.body.appendChild(this.domNode);
 
     // add Completion popup
+    console.log("FramedCompEngine initializing")
     this._completion = new Completion(this.widget, this.domNode, this._configOptions, this.dummyTextArea, this.iframeNode.offsetTop, this.iframeNode.offsetLeft);
 
     // print iframe offset

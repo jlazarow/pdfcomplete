@@ -49,9 +49,13 @@ TODO : CHECK if needed
 
 // To compute pixel coordinates of cursor
 var getCaretCoordinates = require("$:/plugins/jlazarow/pdfcomplete/cursor-position.js");
+var pdfparser = require("$:/plugins/tiddlywiki/pdfjs/pdf-parser.js");
+var pdf = require("$:/plugins/tiddlywiki/pdfjs/pdf.js");
+var pdfworker = require("$:/plugins/tiddlywiki/pdfjs/pdf.worker.js");
 
-/** Default Completion Attributes */
-var DEFATT = { maxMatch: 5, minPatLength: 2, caseSensitive: false, triggerKeyCombination: "^ " };
+var PDF_WORKER_PREFIX = "files";
+    
+pdf.GlobalWorkerOptions.workerSrc = PDF_WORKER_PREFIX + "/" + "pdf.worker.js";
 
 /** 
  * Struct for generic Completion Templates.
@@ -61,10 +65,10 @@ var DEFATT = { maxMatch: 5, minPatLength: 2, caseSensitive: false, triggerKeyCom
  * <li>mask: replaced by "" when presenting completion options</li>
  * </ul>
  */
-var Template = function( pat, filter, mask, field, start, end  ) {
+var Template = function(pat, filter, mask, field, start, end) {
     this.pat = pat;
     this.filter = filter;
-    this.mask = "^"+regExpEscape(mask);
+    this.mask = "^" + regExpEscape(mask);
     this.field = field;
     this.start = start;
     this.end = end;
@@ -74,7 +78,7 @@ var Template = function( pat, filter, mask, field, start, end  ) {
  * Struct for storing completion options, as we need to memorise 
  * the titles of the tiddlers when masked and when body must be displayed.
  */
-var OptCompletion = function( title, str ) {
+var OptCompletion = function(title, str) {
     this.title = title;
     this.str = str;
 };
@@ -115,8 +119,9 @@ function CompletedItem(title, obj) {
     this.obj = obj;
 }
 
-function CompletionSource(wiki, caseSensitive, maximumMatches) {
+function CompletionSource(wiki, tiddler, caseSensitive, maximumMatches) {
     this.wiki = wiki;
+    this.tiddler = tiddler;
     this.caseSensitive = caseSensitive;
     this.maximumMatches = maximumMatches;
     this.maskPrefix = null;
@@ -185,8 +190,8 @@ CompletionSource.prototype.rank = function(completions, partial, limit) {
 
 // preserving the original tiddler based implementation.
 // I think this needs a "term"?    
-function FilteringCompletionSource(wiki, caseSensitive, maximumMatches, template) {
-    CompletionSource.call(this, wiki, caseSensitive, maximumMatches);
+function FilteringCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, template) {
+    CompletionSource.call(this, wiki, tiddler, caseSensitive, maximumMatches);
 
     this.template = template || null;
 
@@ -222,6 +227,145 @@ FilteringCompletionSource.prototype.complete = function(partial, limit) {
     return this.rank(items, partial, limit);
 }
 
+function PDFOutlineItem(title, destination, level, items) {
+    this.title = title;
+    this.destination = destination;
+    this.level = level;
+    this.items = items;
+}
+
+PDFOutlineItem.parse = function(item, level) {
+    var childItems = [];
+
+    for (var itemIndex = 0; itemIndex < item.items.length; itemIndex++) {
+        var childItem = PDFOutlineItem.parse(item.items[itemIndex], level + 1);
+        childItems.push(childItem);
+    }
+
+    var title = item.title;
+    var destination = item.dest;
+
+    return new PDFOutlineItem(title, destination, level, childItems);
+}
+
+PDFOutlineItem.prototype.getTitles = function() {
+    var titles = [ this.title ];
+
+    for (var itemIndex = 0; itemIndex < this.items.length; itemIndex++) {
+        var item = this.items[itemIndex];
+
+        titles = titles.concat(item.getTitles());
+    }
+
+    return titles;
+}
+    
+function PDFOutline(rootItems) {
+    // recursively read the top level items.
+    this.items = [];
+
+    for (var rootItemIndex = 0; rootItemIndex < rootItems.length; rootItemIndex++) {
+        var item = PDFOutlineItem.parse(rootItems[rootItemIndex], 0);
+        this.items.push(item);
+    }
+
+    console.log("outline:");
+    console.log(this.items);
+}
+
+PDFOutline.prototype.getTitles = function() {
+    var titles = [];
+
+    for (var itemIndex = 0; itemIndex < this.items.length; itemIndex++) {
+        var item = this.items[itemIndex];
+        
+        titles = titles.concat(item.getTitles());
+    }
+
+    return titles;
+}
+    
+var PDF_FIELD_NAME = "pdf";
+function PDFCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, template) {
+    CompletionSource.call(this, wiki, tiddler, caseSensitive, maximumMatches);
+
+    this.template = template || null;
+
+    if (this.template != null && this.template.mask != null) {
+        this.maskPrefix = this.template.mask;
+        console.log("mask prefix: " + this.maskPrefix);
+    }
+    else {
+        console.log("no mask prefix");
+    }
+
+    // start the process of parsing the default PDF (if there is one).
+    this.pdfName = null;
+    if (PDF_FIELD_NAME in tiddler.fields) {
+        this.pdfName = tiddler.fields[PDF_FIELD_NAME]
+    }
+
+    this.document = null;
+    this.outline = null;
+    
+    this.startPDFParsing();
+}
+
+PDFCompletionSource.prototype = Object.create(CompletionSource.prototype);
+PDFCompletionSource.prototype.constructor = PDFCompletionSource;
+
+PDFCompletionSource.prototype.startPDFParsing = function() {
+    if (this.pdfName == null) {
+        return;
+    }
+
+    console.log("attempting to parse PDF named " + this.pdfName);
+    pdf.getDocument(PDF_WORKER_PREFIX + "/" + this.pdfName).then(function(document) {
+        console.log("woo, got document");
+        console.log(document);
+
+        this.document = document;
+
+        return this.document.getOutline();
+    }.bind(this)).then(function(outline) {
+        console.log("woo, got outline");
+        console.log(outline);
+
+        if (outline != null) {
+            this.outline = new PDFOutline(outline);
+            console.log(this.outline);
+            console.log(this.outline.getTitles());
+        }
+    }.bind(this));
+}
+    
+PDFCompletionSource.prototype.complete = function(partial, limit) {
+    console.log("PDFCompletionSource.complete()");
+    console.log(partial);
+
+    // this will be a little more complicated. we're interested in:
+    // "named destinations" (e.g. outline).
+    // "images/graphs".
+    // for now just complete against the default PDF with the outline.
+
+    var matchingNames = [];
+    if (this.outline != null) {
+        matchingNames = matchingNames.concat(this.outline.getTitles());
+    }
+
+    if (matchingNames.length == 0) {
+        return [];
+    }
+
+    // speed implications here.
+    var items = [];
+    for (var nameIndex = 0; nameIndex < matchingNames.length; nameIndex++) {
+        items.push(new CompletedItem(matchingNames[nameIndex], null));
+    }
+    
+    return this.rank(items, partial, limit);
+}
+    
 /**
  * Widget is needed in creating popupNode.
  * - widget.document
@@ -231,12 +375,25 @@ FilteringCompletionSource.prototype.complete = function(partial, limit) {
 var STATE_VOID = "VOID";
 var STATE_PATTERN = "PATTERN";
 var STATE_SELECT = "SELECT";
-    
-var Completion = function( editWidget, areaNode, param, sibling, offTop, offLeft ) {
+
+var DEFAULT_MAX_MATCH = 5;    
+var DEFAULT_MIN_PATTERN_LENGTH = 2;
+var DEFAULT_CASE_SENSITIVE = false;
+var DEFAULT_TRIGGER_KEY_COMBO = "^ ";
+
+// from what I understand, a widget is tied to a specific tiddler, so we should
+// have no problem storing specific data here.    
+var Completion = function(editWidget, areaNode, param, sibling, offTop, offLeft) {
     console.log("Completion.creation(()");
+    console.log(editWidget);
 
     // About underlying Widget
     this._widget = editWidget;
+    this._wiki = this._widget.wiki;
+    this._tiddler = this._wiki.getTiddler(this._widget.attributes.tiddler);
+    console.log("attached to tiddler:");
+    console.log(this._tiddler);
+    
     this._areaNode = areaNode;
     this._sibling  = (typeof sibling !== 'undefined') ?  sibling : this._areaNode;
     this._offTop = (typeof offTop !== 'undefined') ?  offTop : 0;
@@ -252,74 +409,39 @@ var Completion = function( editWidget, areaNode, param, sibling, offTop, offLeft
 
     /** Param */
     // maximum nb of match displayed
-    this._maxMatch     = param.configuration.maxMatch || DEFATT.maxMatch;   
-    this._minPatLength = param.configuration.minPatLength || DEFATT.minPatLength;
-    this._caseSensitive= param.configuration.caseSensitive || DEFATT.caseSensitive;
-    this._triggerKeyMatcher = keyMatchGenerator(param.configuration.triggerKeyCombination || DEFATT.triggerKeyCombination);
+    this._maxMatch = param.configuration.maxMatch || DEFEAULT_MAX_MATCH;
+    this._minPatLength = param.configuration.minPatLength || DEFAULT_MIN_PATTERN_LENGTH;
+    this._caseSensitive = param.configuration.caseSensitive || DEFAULT_CASE_SENSITIVE;
+    this._triggerKeyMatcher = keyMatchGenerator(param.configuration.triggerKeyCombination || DEFAULT_TRIGGER_KEY_COMBO);
     /** Input information */
     this._lastChar = "";
     this._hasInput = false;
-    /** List of Completion Templates */
-    this._listTemp = [];
 
-    // todo, use param.
-    this.source = new FilteringCompletionSource(
-        this._widget.wiki,
-        false, // case insensitive,
-        5, // maximum matches
-    	new Template( "[[", "[all[tiddlers]!is[system]]", 
-		      "", "title",
-		      "[[", "]]"));
-        
-    //     {
-            
-    //     })
-    
-    // // Read templates from Param
-    // if( param.template ) {
-    // 	var idT;
-    // 	for( idT=0; idT<param.template.length; idT++ ) {
-    // 	    var temp = param.template[idT];
-    //         // field 'body' ou 'title' (default)
-    //         if( temp.body ) {		
-    // 		this._listTemp.push( 
-    // 		    new Template( temp.pattern, temp.body,
-    //     			  temp.mask ? temp.mask : "",
-    //     			  "body",
-    // 				  temp.start, temp.end )
-    // 		);
-    //         }
-    //         else {
-    // 		this._listTemp.push( 
-    // 		    new Template( temp.pattern, 
-    //     			  temp.title ? temp.title : temp.filter,
-    //     			  temp.mask ? temp.mask : "",
-    //     			  "title",
-    // 				  temp.start, temp.end )
-    // 		);
-    //         }
-    //         //DEBUG temp = this._listTemp[this._listTemp.length-1];
-    //         //DEBUG console.log( "__CONF : "+temp.pattern+":"+temp.filter+":"+temp.mask+":"+temp.field+":"+temp.start+":"+temp.end );
-    // 	}
-    // }
-    // // or defaut template. TODO: associate templates to "compeltion sources" e.g. [pdf[ should look only for PDF-related tiddlers.
-    // else {
-    // 	this._listTemp = [
-    // 	    new Template( "[[", "[all[tiddlers]!is[system]]", 
-    //     		  "", "title",
-    //     		  "[[", "]]" )
-    // 	];
-    // }
-    // Create Popup
-    //this._popNode = createPopup(this._widget, this._areaNode );
-
-    this._listTemp = [
-    	new Template( "[[", "[all[tiddlers]!is[system]]", 
-        	      "", "title",
-        	      "[[", "]]" )
+    this.source = null;
+    this.sources = [
+        new FilteringCompletionSource(
+            this._wiki,
+            this._tiddler,
+            false, // case insensitive,
+            5, // maximum matches
+    	    new Template("[[", "[all[tiddlers]!is[system]]", "", "title", "[[", "]]")),
+        new PDFCompletionSource(
+            this._wiki,
+            this._tiddler,
+            false,
+            10,
+            new Template("[pdf[", null, "", null, "[pdf[", "]]"))
     ];
+        
+    this.templates = [];
+    for (var sourceIndex = 0; sourceIndex < this.sources.length; sourceIndex++) {
+        var source = this.sources[sourceIndex];
+        if (source.template != undefined || source.template != null) {
+            this.templates.push(source.template);
+        }
+    }
     
-    this._popNode = createPopup(this._widget, this._sibling );	
+    this._popNode = createPopup(this._widget, this._sibling);	
     
     // Listen to the Keyboard
     $tw.utils.addEventListeners( this._areaNode,[
@@ -329,59 +451,6 @@ var Completion = function( editWidget, areaNode, param, sibling, offTop, offLeft
     	{name: "keyup", handlerObject: this, handlerMethod: "handleKeyup"}
     ]);
    
-    /** 
-     * Find the bestMatches among listChoice with given pattern
-     * @param listChoice : array of String
-     * @change : this._bestMatches => array of OptCompletion
-     */
-    this._findBestMatches = function( listChoice, pattern, nbMax) {
-	// regexp search pattern, case sensitive
-	var flagSearch = this._caseSensitive ? "" : "i" ;
-	var regpat = RegExp( regExpEscape(pattern), flagSearch );
-	var regpat_start = RegExp( "^"+regExpEscape(pattern), flagSearch );
-	var regMask = RegExp( this._template.mask ? this._template.mask : "","");
-	var nbMatch = 0;
-	// nbMax set to _maxMatch if no value given
-	nbMax = nbMax !== undefined ? nbMax : this._maxMatch;
-
-	//DEBUG console.log( "__FIND masked="+regMask+" regPat="+regpat);
-
-	this._bestMatches= [];
-	var otherMatches = [];
-	// We test every possible choice
-	for( var i=0; i< listChoice.length; i++ ) {
-	    // apply mask over potential choice
-	    var maskedChoice = listChoice[i].replace( regMask, "");
-	    // Test first if pattern is found at START of the maskedChoice
-	    // THEN added to BestMatches
- 	    if( regpat_start.test( maskedChoice )) {
-		if (nbMatch >= nbMax) {
-		    this._bestMatches.push( new OptCompletion("","...") );
-		    return;
-		} else {
-		    this._bestMatches.push( new OptCompletion(listChoice[i],maskedChoice) );
-		    nbMatch += 1;
-		}
-	    }
-	    // then if pattern is found WITHIN the maskedChoice
-	    // added AFTER the choices that starts with pattern
-	    else if( regpat.test( maskedChoice ) ) {
-		if (nbMatch >= nbMax) {
-		    // add all otherMatches to _bestMatches
-		    this._bestMatches.push( new OptCompletion("","<hr>") ) ; //separator
-		    this._bestMatches = this._bestMatches.concat( otherMatches );
-		    this._bestMatches.push( new OptCompletion("","...") );
-		    return;
-		} else {
-		    otherMatches.push( new OptCompletion(listChoice[i],maskedChoice));
-		    nbMatch += 1;
-		}
-	    }
-	}
-	// Here, must add the otherMatches
-	this._bestMatches.push( new OptCompletion("","<hr>") ) ; //separator
-	this._bestMatches = this._bestMatches.concat( otherMatches );
-    };
     /**
      * Change Selected Status of Items
      */
@@ -417,7 +486,7 @@ var Completion = function( editWidget, areaNode, param, sibling, offTop, offLeft
     /**
      * Abort pattern and undisplay.
      */
-    this._abortPattern = function (displayNode) {
+    this._abortPattern = function(displayNode) {
 	this._state = "VOID";
 	this._bestChoices = [];
 	this._idxChoice = -1;
@@ -427,8 +496,8 @@ var Completion = function( editWidget, areaNode, param, sibling, offTop, offLeft
     /**
      * Display popupNode at the cursor position in areaNode.
      */
-    this._display = function( areaNode, popupNode ) {
-	if ( popupNode.style.display == 'none' ) {
+    this._display = function(areaNode, popupNode) {
+	if (popupNode.style.display == 'none') {
 	    // Must get coordinate
 	    // Cursor coordinates within area + area coordinates + scroll
             var coord = getCaretCoordinates(areaNode, areaNode.selectionEnd);
@@ -443,8 +512,8 @@ var Completion = function( editWidget, areaNode, param, sibling, offTop, offLeft
     /**
      * Undisplay someNode
      */
-    this._undisplay = function( displayNode ) {
-	if ( displayNode.style.display != 'none' ) {
+    this._undisplay = function(displayNode) {
+	if (displayNode.style.display != 'none') {
 	    displayNode.style.display = 'none';
 	}
     };
@@ -453,7 +522,7 @@ var Completion = function( editWidget, areaNode, param, sibling, offTop, offLeft
      * Used for debug
      */
     this._logStatus = function(msg) {
-	console.log( "__STATUS: "+this._state+":-"+msg+"- idx="+this._idxChoice );
+	console.log("__STATUS: " + this._state + ":-" + msg + "- idx=" + this._idxChoice);
     };
 
 };
@@ -472,18 +541,18 @@ Completion.prototype.handleKeydown = function(event) {
     //DEBUG console.log( "__KEYDOWN ("+key+") hasI="+this._hasInput);
     
     // ENTER while selecting
-    if( (this._state === STATE_PATTERN || this._state === STATE_SELECT) && key === 13 ) {
+    if ((this._state === STATE_PATTERN || this._state === STATE_SELECT) && key === KEYCODE_ENTER) {
     	event.preventDefault();
     	event.stopPropagation();
     }
     // ESC while selecting
-    if( (this._state === STATE_PATTERN || this._state === STATE_SELECT) && key === 27 ) {
+    if ((this._state === STATE_PATTERN || this._state === STATE_SELECT) && key === KEYCODE_ESCAPE) {
     	event.preventDefault();
     	event.stopPropagation();
     }
     // UP/DOWN while a pattern is extracted
-    if( (key===38 || key===40) && 
-	(this._state === STATE_PATTERN || this._state === STATE_SELECT) ) {
+    if ((key === KEYCODE_UP || key === KEYCODE_DOWN) && 
+	(this._state === STATE_PATTERN || this._state === STATE_SELECT)) {
 	event.preventDefault();
     }
 };
@@ -501,7 +570,6 @@ Completion.prototype.handleInput = function(event) {
 Completion.prototype.handleKeypress = function(event) {
     var curPos = this._areaNode.selectionStart;  // cursor position
     var val = this._areaNode.value;   // text in the area
-    // key 
     var key = event.keyCode || event.which;
 	
     this._lastChar = String.fromCharCode(key);
@@ -514,12 +582,11 @@ Completion.prototype.handleKeypress = function(event) {
 	if( this._template === undefined ) {
 	    //DEBUG console.log("__SPACE : find a Template" );
 	    var idT, res;
-	    for( idT=0; idT < this._listTemp.length; idT++ ) {
-		res = extractPattern( val, curPos, this._listTemp[idT] );
-		//DEBUG console.log("  t="+this._listTemp[idT].pat+" res="+res);
+	    for (idT = 0; idT < this.templates.length; idT++) {
+		res = extractPattern(val, curPos, this.templates[idT]);
 		// res is not undefined => good template candidate
-		if( res ) {
-		    this._template = this._listTemp[idT];
+		if (res) {
+		    this._template = this.templates[idT];
 		    this._state = STATE_PATTERN;
 		    break;
 		}
@@ -561,16 +628,22 @@ Completion.prototype.handleKeyup = function(event) {
     if(this._hasInput && this._state === STATE_VOID) {
 	// check every template's pattern
 	var idT, template;
-	for( idT=0; idT < this._listTemp.length; idT++ ) {
-	    template = this._listTemp[idT];
-	    if( this._lastChar === template.pat[template.pos] ) {
+	for (idT=0; idT < this.templates.length; idT++) {
+	    template = this.templates[idT];
+	    if (this._lastChar === template.pat[template.pos]) {
 		template.pos += 1;
 		//DEBUG console.log( "__CHECK : pat="+template.pat+" pos="+template.pos );
 		// Pattern totaly matched ?
-		if( template.pos === template.pat.length ) {
+		if (template.pos === template.pat.length) {
 		    //DEBUG console.log( "__CHECK => found "+template.pat );
 		    this._state = STATE_PATTERN;
 		    this._template = template;
+                    this.source = this.sources[idT];
+
+                    // this is an interesting choice because we don't know
+                    // how the user will interact e.g. erasing versus backspace
+                    // should invalidate this code. my guess is that this code should
+                    // look _back_ at any given instance to see if they can match a template.
 		    
 		    break; // get out of loop
 		}
@@ -602,7 +675,7 @@ Completion.prototype.handleKeyup = function(event) {
 		this._widget.saveChanges( this._areaNode.value );
 	    }
 	    // otherwise take the first choice (if exists)
-	    else if( this._bestMatches.length > 0 ) {
+	    else if (this._bestMatches.length > 0) {
     		//DEBUG console.log( "   > take first one" );
 		var temp = this._bestMatches[0];
 		var str = temp.str;
@@ -636,7 +709,6 @@ Completion.prototype.handleKeyup = function(event) {
                 console.log("attempting to complete: " + pattern.text);
 		this._bestMatches = this.source.complete(pattern.text);
                 
-                //this._findBestMatches( allOptions, pattern.text );
     		this._popNode.innerHTML = "";
 
                 //console.log( "BC "+ this._pattern + " => " + choice );
@@ -656,7 +728,7 @@ Completion.prototype.handleKeyup = function(event) {
 	    }
     	}
 	else { // no pattern detected
-	    this._abortPattern( this._popNode );
+	    this._abortPattern(this._popNode);
 	}
     }
 
