@@ -1,5 +1,5 @@
 /*\
-title: $:/plugins/snowgoon88/edit-comptext/simple.js
+title: $:/plugins/jlazarow/pdfcomplete/simple.js
 type: application/javascript
 module-type: library
 
@@ -16,8 +16,8 @@ Text editor engine based on a simple input or textarea tag
 var HEIGHT_VALUE_TITLE = "$:/config/TextEditor/EditorHeight/Height";
 
 // Configuration tiddler
-var COMPLETION_OPTIONS = "$:/plugins/snowgoon88/edit-comptext/config";
-var Completion = require("$:/plugins/snowgoon88/edit-comptext/completion.js").Completion;
+var COMPLETION_OPTIONS = "$:/plugins/jlazarow/pdfcomplete/config";
+var Completion = require("$:/plugins/jlazarow/pdfcomplete/completion.js").Completion;
 
 function SimpleCompEngine(options) {
 	// Save our options

@@ -1,10 +1,10 @@
 {
-	"title": "$:/plugins/snowgoon88/edit-comptext",
-	"description": "Editor with some on-line completion capabilities",
-	"author": "AlainD",
-	"version": "0.8.1",
+	"title": "$:/plugins/jlazarow/pdfcomplete",
+	"description": "Editor with online PDF completion capabilities",
+	"author": "AlainD, jlazarow",
+	"version": "0.0.1",
 	"core-version": ">=5.1.13",
-	"source": "https://github.com/snowgoon88/TW5-extendedit",
+	"source": "https://github.com/jlazarow/pdfcomplete",
 	"plugin-type": "plugin",
 	"list": "readme usage examples"
 }

@@ -4,35 +4,35 @@
 			"file": "framed.js",
 			"fields": {
 				  "type": "application/javascript",
-				  "title": "$:/plugins/snowgoon88/edit-comptext/framed.js",
+				  "title": "$:/plugins/jlazarow/pdfcomplete/framed.js",
 				  "module-type": "library"
 			}
 		},{
 			"file": "simple.js",
 			"fields": {
 				  "type": "application/javascript",
-				  "title": "$:/plugins/snowgoon88/edit-comptext/simple.js",
+				  "title": "$:/plugins/jlazarow/pdfcomplete/simple.js",
 				  "module-type": "library"
 			}
 		},{
 			"file": "cursor-position.js",
 			"fields": {
 				  "type": "application/javascript",
-				  "title": "$:/plugins/snowgoon88/edit-comptext/cursor-position.js",
+				  "title": "$:/plugins/jlazarow/pdfcomplete/cursor-position.js",
 				  "module-type": "library"
 			}
 		},{
 			"file": "completion.js",
 			"fields": {
 				  "type": "application/javascript",
-				  "title": "$:/plugins/snowgoon88/edit-comptext/completion.js",
+				  "title": "$:/plugins/jlazarow/pdfcomplete/completion.js",
 				  "module-type": "library"
 			}
 		},{
 			"file": "edit-comptext.css",
 			"fields": {
 				"type": "text/vnd.tiddlywiki",
-				"title": "$:/plugins/snowgoon88/edit-comptext/edit-comptext.css",
+				"title": "$:/plugins/jlazarow/pdfcomplete/edit-comptext.css",
 				"tags": "[[$:/tags/Stylesheet]]"
 			}
 		}

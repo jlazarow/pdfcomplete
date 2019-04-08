@@ -1,5 +1,5 @@
 /*\
-title: $:/plugins/snowgoon88/edit-comptext/completion.js
+title: $:/plugins/jlazarow/pdfcomplete/completion.js
 type: application/javascript
 module-type: library
 
@@ -48,7 +48,7 @@ TODO : CHECK if needed
 "use strict";
 
 // To compute pixel coordinates of cursor
-var getCaretCoordinates = require("$:/plugins/snowgoon88/edit-comptext/cursor-position.js");
+var getCaretCoordinates = require("$:/plugins/jlazarow/pdfcomplete/cursor-position.js");
 
 /** Default Completion Attributes */
 var DEFATT = { maxMatch: 5, minPatLength: 2, caseSensitive: false, triggerKeyCombination: "^ " };
@@ -110,29 +110,146 @@ var keyMatchGenerator = function(combination) {
 	};
 };
 
+function CompletedItem(title, obj) {
+    this.title = title;
+    this.obj = obj;
+}
+
+function CompletionSource(wiki, caseSensitive, maximumMatches) {
+    this.wiki = wiki;
+    this.caseSensitive = caseSensitive;
+    this.maximumMatches = maximumMatches;
+    this.maskPrefix = null;
+}
+
+// should return "CompletedItem[]"
+CompletionSource.prototype.complete = function(partial) {
+    return [];
+}
+
+CompletionSource.prototype.rank = function(completions, partial, limit) {
+    limit = limit || this.maximumMatches;
+        
+    var regexFlag = this.caseSensitive ? "" : "i";
+    var regexPattern = RegExp(regExpEscape(partial), regexFlag);
+    var regexPatternStart = RegExp("^" + regExpEscape(partial), regexFlag);
+    var regexMask = RegExp(this.maskPrefix || "", "");
+
+    var numberMatches = 0;
+
+    var bestMatches = [];
+    var otherMatches = []
+
+    for (var completionIndex = 0; completionIndex < completions.length; completionIndex++) {
+        var completion = completions[completionIndex];
+	var maskedTitle = completion.title.replace(regexMask, "");
+
+        // good matches _begin_ with the pattern. I think this should just
+        // be re-factored to take the "found index" and compute a score from
+        // that. leaving like this for now.
+ 	if (regexPatternStart.test(maskedTitle)) {
+	    if (numberMatches >= limit) {
+                // I guess reserve the last one for "more".
+		bestMatches.push(new OptCompletion("","..."));
+		return bestMatches;
+	    } else {
+		bestMatches.push(new OptCompletion(completion.title, maskedTitle));
+		numberMatches += 1;
+	    }
+	}
+	else if (regexPattern.test(maskedTitle)) {
+            // then if pattern is found WITHIN the maskedChoice
+	    // added AFTER the choices that starts with pattern
+	    if (numberMatches >= limit) {
+                // finish things off. this should really just be a "break"
+		bestMatches.push(new OptCompletion("", "<hr>")); //separator
+		bestMatches = bestMatches.concat(otherMatches);
+		bestMatches.push(new OptCompletion("", "..."));
+
+                return bestMatches;
+	    } else {
+		otherMatches.push(new OptCompletion(completion.title, maskedTitle));
+		numberMatches += 1;
+	    }
+	}
+    }
+
+    // Here, must add the otherMatches
+    bestMatches.push(new OptCompletion("", "<hr>")) ; //separator
+    bestMatches = bestMatches.concat(otherMatches);
+
+    // would rather "return" this. my guess is the previous code might
+    // be hitting weirdness if threads exist.
+    return bestMatches;
+}
+
+// preserving the original tiddler based implementation.
+// I think this needs a "term"?    
+function FilteringCompletionSource(wiki, caseSensitive, maximumMatches, template) {
+    CompletionSource.call(this, wiki, caseSensitive, maximumMatches);
+
+    this.template = template || null;
+
+    if (this.template != null && this.template.mask != null) {
+        this.maskPrefix = this.template.mask;
+        console.log("mask prefix: " + this.maskPrefix);
+    }
+    else {
+        console.log("no mask prefix");
+    }
+}
+
+FilteringCompletionSource.prototype = Object.create(CompletionSource.prototype);
+FilteringCompletionSource.prototype.constructor = FilteringCompletionSource;
+    
+FilteringCompletionSource.prototype.complete = function(partial, limit) {
+    console.log("FilteringCompletionSource.complete()");
+
+    var matchingNames = null;
+    if (this.template != null) {
+        matchingNames = this.wiki.filterTiddlers(this.template.filter);
+    }
+    else {
+        matchingNames = this.wiki.filterTiddlers("[all[tiddlers]]");
+    }
+
+    // speed implications here.
+    var items = [];
+    for (var nameIndex = 0; nameIndex < matchingNames.length; nameIndex++) {
+        items.push(new CompletedItem(matchingNames[nameIndex], null));
+    }
+    
+    return this.rank(items, partial, limit);
+}
+
 /**
  * Widget is needed in creating popupNode.
  * - widget.document
  * - widget.wiki.filterTiddlers(...)
  * - sibling : where to create the popup in the DOM.
  */
-	var Completion = function( editWidget, areaNode, param, sibling, offTop, offLeft ) {
-	console.log( "==Completion::creation" );
+var STATE_VOID = "VOID";
+var STATE_PATTERN = "PATTERN";
+var STATE_SELECT = "SELECT";
+    
+var Completion = function( editWidget, areaNode, param, sibling, offTop, offLeft ) {
+    console.log("Completion.creation(()");
 
     // About underlying Widget
     this._widget = editWidget;
-	this._areaNode = areaNode;
-	this._sibling  = (typeof sibling !== 'undefined') ?  sibling : this._areaNode;
-	this._offTop = (typeof offTop !== 'undefined') ?  offTop : 0;
-	this._offLeft = (typeof offLeft !== 'undefined') ?  offLeft : 0;	
+    this._areaNode = areaNode;
+    this._sibling  = (typeof sibling !== 'undefined') ?  sibling : this._areaNode;
+    this._offTop = (typeof offTop !== 'undefined') ?  offTop : 0;
+    this._offLeft = (typeof offLeft !== 'undefined') ?  offLeft : 0;	
 		
-    // Completions attributes
-    /** State */
-    this._state = "VOID";
+    // this is a state machine.
+    this._state = STATE_VOID;
     this._template = undefined;
+
     /** Best matches */
     this._bestMatches = []; // An array of OptCompletion
     this._idxChoice = -1;
+
     /** Param */
     // maximum nb of match displayed
     this._maxMatch     = param.configuration.maxMatch || DEFATT.maxMatch;   
@@ -144,45 +261,65 @@ var keyMatchGenerator = function(combination) {
     this._hasInput = false;
     /** List of Completion Templates */
     this._listTemp = [];
+
+    // todo, use param.
+    this.source = new FilteringCompletionSource(
+        this._widget.wiki,
+        false, // case insensitive,
+        5, // maximum matches
+    	new Template( "[[", "[all[tiddlers]!is[system]]", 
+		      "", "title",
+		      "[[", "]]"));
+        
+    //     {
+            
+    //     })
     
-    // Read templates from Param
-    if( param.template ) {
-    	var idT;
-    	for( idT=0; idT<param.template.length; idT++ ) {
-    	    var temp = param.template[idT];
-	    // field 'body' ou 'title' (default)
-	    if( temp.body ) {		
-    		this._listTemp.push( 
-    		    new Template( temp.pattern, temp.body,
-				  temp.mask ? temp.mask : "",
-				  "body",
-    				  temp.start, temp.end )
-    		);
-	    }
-	    else {
-    		this._listTemp.push( 
-    		    new Template( temp.pattern, 
-				  temp.title ? temp.title : temp.filter,
-				  temp.mask ? temp.mask : "",
-				  "title",
-    				  temp.start, temp.end )
-    		);
-	    }
-	    //DEBUG temp = this._listTemp[this._listTemp.length-1];
-	    //DEBUG console.log( "__CONF : "+temp.pattern+":"+temp.filter+":"+temp.mask+":"+temp.field+":"+temp.start+":"+temp.end );
-    	}
-    }
-    // or defaut template
-    else {
-    	this._listTemp = [
-    	    new Template( "[[", "[all[tiddlers]!is[system]]", 
-			  "", "title",
-			  "[[", "]]" )
-    	];
-    }
+    // // Read templates from Param
+    // if( param.template ) {
+    // 	var idT;
+    // 	for( idT=0; idT<param.template.length; idT++ ) {
+    // 	    var temp = param.template[idT];
+    //         // field 'body' ou 'title' (default)
+    //         if( temp.body ) {		
+    // 		this._listTemp.push( 
+    // 		    new Template( temp.pattern, temp.body,
+    //     			  temp.mask ? temp.mask : "",
+    //     			  "body",
+    // 				  temp.start, temp.end )
+    // 		);
+    //         }
+    //         else {
+    // 		this._listTemp.push( 
+    // 		    new Template( temp.pattern, 
+    //     			  temp.title ? temp.title : temp.filter,
+    //     			  temp.mask ? temp.mask : "",
+    //     			  "title",
+    // 				  temp.start, temp.end )
+    // 		);
+    //         }
+    //         //DEBUG temp = this._listTemp[this._listTemp.length-1];
+    //         //DEBUG console.log( "__CONF : "+temp.pattern+":"+temp.filter+":"+temp.mask+":"+temp.field+":"+temp.start+":"+temp.end );
+    // 	}
+    // }
+    // // or defaut template. TODO: associate templates to "compeltion sources" e.g. [pdf[ should look only for PDF-related tiddlers.
+    // else {
+    // 	this._listTemp = [
+    // 	    new Template( "[[", "[all[tiddlers]!is[system]]", 
+    //     		  "", "title",
+    //     		  "[[", "]]" )
+    // 	];
+    // }
     // Create Popup
-	//this._popNode = createPopup(this._widget, this._areaNode );
-	this._popNode = createPopup(this._widget, this._sibling );	
+    //this._popNode = createPopup(this._widget, this._areaNode );
+
+    this._listTemp = [
+    	new Template( "[[", "[all[tiddlers]!is[system]]", 
+        	      "", "title",
+        	      "[[", "]]" )
+    ];
+    
+    this._popNode = createPopup(this._widget, this._sibling );	
     
     // Listen to the Keyboard
     $tw.utils.addEventListeners( this._areaNode,[
@@ -236,7 +373,7 @@ var keyMatchGenerator = function(combination) {
 		    this._bestMatches.push( new OptCompletion("","...") );
 		    return;
 		} else {
-		    otherMatches.push( new OptCompletion(listChoice[i],maskedChoice) );
+		    otherMatches.push( new OptCompletion(listChoice[i],maskedChoice));
 		    nbMatch += 1;
 		}
 	    }
@@ -335,18 +472,18 @@ Completion.prototype.handleKeydown = function(event) {
     //DEBUG console.log( "__KEYDOWN ("+key+") hasI="+this._hasInput);
     
     // ENTER while selecting
-    if( (this._state === "PATTERN" || this._state === "SELECT") && key === 13 ) {
+    if( (this._state === STATE_PATTERN || this._state === STATE_SELECT) && key === 13 ) {
     	event.preventDefault();
     	event.stopPropagation();
     }
     // ESC while selecting
-    if( (this._state === "PATTERN" || this._state === "SELECT") && key === 27 ) {
+    if( (this._state === STATE_PATTERN || this._state === STATE_SELECT) && key === 27 ) {
     	event.preventDefault();
     	event.stopPropagation();
     }
     // UP/DOWN while a pattern is extracted
     if( (key===38 || key===40) && 
-	(this._state === "PATTERN" || this._state === "SELECT") ) {
+	(this._state === STATE_PATTERN || this._state === STATE_SELECT) ) {
 	event.preventDefault();
     }
 };
@@ -372,9 +509,8 @@ Completion.prototype.handleKeypress = function(event) {
     //DEBUG this._logStatus( "KEYPRESS" );
     
     // Detect Ctrl+Space
-    if( this._triggerKeyMatcher(event) && this._state === "VOID" ) {
-	//Find a proper Template
-	// first from which we can extract a pattern
+    if(this._triggerKeyMatcher(event) && this._state === STATE_VOID) {
+        // match to a template.
 	if( this._template === undefined ) {
 	    //DEBUG console.log("__SPACE : find a Template" );
 	    var idT, res;
@@ -384,14 +520,14 @@ Completion.prototype.handleKeypress = function(event) {
 		// res is not undefined => good template candidate
 		if( res ) {
 		    this._template = this._listTemp[idT];
-		    this._state = "PATTERN";
+		    this._state = STATE_PATTERN;
 		    break;
 		}
 	    }
 	}
 	else {
 	    //DEBUG console.log("__SPACE : already a template" );
-	    this._state = "PATTERN";
+	    this._state = STATE_PATTERN;
 	}
     }
 };
@@ -402,21 +538,27 @@ Completion.prototype.handleKeypress = function(event) {
  *                     UP/DOWN -> previous/next
  *                     pattern.length > _minPatternLength -> display  
  */
+
+var KEYCODE_ENTER = 13;
+var KEYCODE_ESCAPE = 27;
+var KEYCODE_UP = 38;
+var KEYCODE_DOWN = 40;
+    
 Completion.prototype.handleKeyup = function(event) {
     var curPos = this._areaNode.selectionStart;  // cursor position
     var val = this._areaNode.value;   // text in the area
-    // key a
     var key = event.keyCode;
     
     //DEBUG console.log( "__KEYUP ("+key+") hasI="+this._hasInput );
     
     // ESC
-    if( key === 27 ) {
-	this._abortPattern( this._popNode );
+    if (key === KEYCODE_ESCAPE ) {
+	this._abortPattern(this._popNode);
 	//DEBUG this._logStatus( "" );
     }
+
     // Check for every template
-    if( this._hasInput && this._state === "VOID" ) {
+    if(this._hasInput && this._state === STATE_VOID) {
 	// check every template's pattern
 	var idT, template;
 	for( idT=0; idT < this._listTemp.length; idT++ ) {
@@ -427,7 +569,7 @@ Completion.prototype.handleKeyup = function(event) {
 		// Pattern totaly matched ?
 		if( template.pos === template.pat.length ) {
 		    //DEBUG console.log( "__CHECK => found "+template.pat );
-		    this._state = "PATTERN";
+		    this._state = STATE_PATTERN;
 		    this._template = template;
 		    
 		    break; // get out of loop
@@ -440,16 +582,14 @@ Completion.prototype.handleKeyup = function(event) {
 	}
     }
     // a pattern
-    else if( this._state === "PATTERN" || this._state === "SELECT" ) {
+    else if (this._state === STATE_PATTERN || this._state === STATE_SELECT) {
 	// Pattern below cursor : undefined if no pattern
-	var pattern = extractPattern( val, curPos, this._template );
-	if( key === 13 ) { // ENTER
-	    //DEBUG console.log( "KEY : Enter" );
-    	    // Choice made in the displayNode ?
+	var pattern = extractPattern(val, curPos, this._template);
+
+        if (key === KEYCODE_ENTER) {
     	    var selected = this._idxChoice > -1 && this._idxChoice !== this._maxMatch;
-    	    //DEBUG console.log( "   > sel="+selected+" len="+this._bestChoices.length );
-    	    if( selected ) {
-    		//DEBUG console.log( "   > selected" );
+
+    	    if (selected) {
 		var temp = this._bestMatches[this._idxChoice];
 		var str = temp.str;
 		if( this._template.field === "body" ) {
@@ -466,67 +606,62 @@ Completion.prototype.handleKeyup = function(event) {
     		//DEBUG console.log( "   > take first one" );
 		var temp = this._bestMatches[0];
 		var str = temp.str;
-		if( this._template.field === "body" ) {
-		    str = $tw.wiki.getTiddlerText( temp.title );
+		if (this._template.field === "body") {
+		    str = $tw.wiki.getTiddlerText(temp.title);
 		}
-    		insertInto( this._areaNode,
-			    str,
-			    pattern.start, curPos, this._template );
-		// save this new content
-		this._widget.saveChanges( this._areaNode.value );
+                
+    		insertInto(
+                    this._areaNode, str, pattern.start, curPos, this._template);
+		this._widget.saveChanges(this._areaNode.value);
 	    }
-	    this._abortPattern( this._popNode );
-		//DEBUG this._logStatus( "" );
-    	    }
-	    else if( key === 38 && this._hasInput === false) { // up
-		this._state = "SELECT";
-    		event.preventDefault();
-    		this._previous( this._popNode );
-		//DEBUG this._logStatus( pattern.text );
-    		//event.stopPropagation();
-    	    }
-    	    else if( key === 40 && this._hasInput === false) { // down
-		this._state = "SELECT";
-    		event.preventDefault();
-    		this._next( this._popNode );
-		//DEBUG this._logStatus( pattern.text );
-    		//event.stopPropagation();
-    	    }
-    	    else if( pattern ) { // pattern changed by keypressed
-		this._idxChoice = -1;
-    		// log
-		//DEBUG this._logStatus( pattern.text );
-    		// Popup with choices if pattern at least minPatLength letters long
-		if( pattern.text.length > (this._minPatLength-1) ) {
-		    // compute listOptions from templateFilter
-		    var allOptions;
-		    if( this._template )
-			allOptions = this._widget.wiki.filterTiddlers( this._template.filter );
-		    else
-			allOptions = this._widget.wiki.filterTiddlers("[all[tiddlers]]");
-		    this._findBestMatches( allOptions, pattern.text );
-    		    this._popNode.innerHTML = "";
-    		    //console.log( "BC "+ this._pattern + " => " + choice );
-    		    if (this._bestMatches.length > 0) {
-			for( var i=0; i<this._bestMatches.length; i++) {
-    			    this._popNode.appendChild( 
-				itemHTML(this._bestMatches[i].str,
-					 pattern.text));
-    			}
-			this._display( this._areaNode, this._popNode );			
+
+            this._abortPattern( this._popNode );
+    	}
+	else if (key === KEYCODE_UP && this._hasInput === false) { // up
+	    this._state = STATE_SELECT;
+    	    event.preventDefault();
+    	    this._previous( this._popNode );
+    	    //event.stopPropagation();
+    	}
+    	else if (key === KEYCODE_DOWN && this._hasInput === false) { // down
+	    this._state = STATE_SELECT;
+    	    event.preventDefault();
+    	    this._next( this._popNode );
+    	    //event.stopPropagation();
+    	}
+    	else if (pattern) { // pattern changed by keypressed
+	    this._idxChoice = -1;
+
+	    if(pattern.text.length > (this._minPatLength - 1)) {
+                console.log("attempting to complete: " + pattern.text);
+		this._bestMatches = this.source.complete(pattern.text);
+                
+                //this._findBestMatches( allOptions, pattern.text );
+    		this._popNode.innerHTML = "";
+
+                //console.log( "BC "+ this._pattern + " => " + choice );
+    		if (this._bestMatches.length > 0) {
+		    for (var i = 0; i < this._bestMatches.length; i++) {
+    			this._popNode.appendChild( 
+			    itemHTML(this._bestMatches[i].str, pattern.text));
     		    }
-		    else { // no matches
-			this._state = "PATTERN";
-			this._undisplay( this._popNode );
-		    }
+                    
+                    this._display( this._areaNode, this._popNode );			
+    		}
+		else {
+                    // still looking for some pattern.
+		    this._state = STATE_PATTERN;
+		    this._undisplay(this._popNode);
 		}
-    	    }
-	    else { // no pattern detected
-		this._abortPattern( this._popNode );
 	    }
+    	}
+	else { // no pattern detected
+	    this._abortPattern( this._popNode );
 	}
-	// to ensure that one MUST add an input (through onInput())
-	this._hasInput = false;
+    }
+
+    // to ensure that one MUST add an input (through onInput())
+    this._hasInput = false;
 };
 // **************************************************************************
 // ******************************************************** private functions
@@ -622,9 +757,7 @@ var insertInto = function(node, text, posBefore, posAfter, template ) {
 var regExpEscape = function (s) {
     return s.replace(/[-\\^$*+?.()|[\]{}]/g, "\\$&");
 };
-/**
- * Add an element in the DOM.
- */
+
 var create = function(tag, o) {
     var element = document.createElement(tag);
     

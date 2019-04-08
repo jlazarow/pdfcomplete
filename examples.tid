@@ -1,6 +1,6 @@
-title: $:/plugins/snowgoon88/edit-comptext/examples
+title: $:/plugins/jlazarow/pdfcomplete/examples
 
-The configuration file [[$:/plugins/snowgoon88/edit-comptext/config]] allow you to use the completion plugin for various usages. Here are some examples...
+The configuration file [[$:/plugins/jlazarow/pdfcomplete/config]] allow you to use the completion plugin for various usages. Here are some examples...
 
 !! Link Completion
 The basic and default usage. Completion is triggered by `[[`, the search is among all non-system tiddlers. When selected, the `title` of the tiddler is inserted in the text, surrounded by `[[` and `]]`. This gives the following Completion Template.
