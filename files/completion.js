@@ -78,9 +78,10 @@ var Template = function(pat, filter, mask, field, start, end) {
  * Struct for storing completion options, as we need to memorise 
  * the titles of the tiddlers when masked and when body must be displayed.
  */
-var OptCompletion = function(title, str) {
+var OptCompletion = function(title, str, obj) {
     this.title = title;
     this.str = str;
+    this.obj = obj || null;
 };
 
 var keyMatchGenerator = function(combination) {
@@ -114,9 +115,10 @@ var keyMatchGenerator = function(combination) {
 	};
 };
 
-function CompletedItem(title, obj) {
+function CompletedItem(title, obj, indent) {
     this.title = title;
     this.obj = obj;
+    this.indent = indent || 0;
 }
 
 function CompletionSource(wiki, tiddler, caseSensitive, maximumMatches) {
@@ -155,10 +157,10 @@ CompletionSource.prototype.rank = function(completions, partial, limit) {
  	if (regexPatternStart.test(maskedTitle)) {
 	    if (numberMatches >= limit) {
                 // I guess reserve the last one for "more".
-		bestMatches.push(new OptCompletion("","..."));
+		bestMatches.push(new OptCompletion("", "...", null));
 		return bestMatches;
 	    } else {
-		bestMatches.push(new OptCompletion(completion.title, maskedTitle));
+		bestMatches.push(new OptCompletion(completion.title, maskedTitle, completion.obj));
 		numberMatches += 1;
 	    }
 	}
@@ -167,25 +169,29 @@ CompletionSource.prototype.rank = function(completions, partial, limit) {
 	    // added AFTER the choices that starts with pattern
 	    if (numberMatches >= limit) {
                 // finish things off. this should really just be a "break"
-		bestMatches.push(new OptCompletion("", "<hr>")); //separator
+		bestMatches.push(new OptCompletion("", "<hr>", null)); //separator
 		bestMatches = bestMatches.concat(otherMatches);
-		bestMatches.push(new OptCompletion("", "..."));
+		bestMatches.push(new OptCompletion("", "...", null));
 
                 return bestMatches;
 	    } else {
-		otherMatches.push(new OptCompletion(completion.title, maskedTitle));
+		otherMatches.push(new OptCompletion(completion.title, maskedTitle, completion.obj));
 		numberMatches += 1;
 	    }
 	}
     }
 
     // Here, must add the otherMatches
-    bestMatches.push(new OptCompletion("", "<hr>")) ; //separator
+    bestMatches.push(new OptCompletion("", "<hr>", null)) ; //separator
     bestMatches = bestMatches.concat(otherMatches);
 
     // would rather "return" this. my guess is the previous code might
     // be hitting weirdness if threads exist.
     return bestMatches;
+}
+
+CompletionSource.prototype.completed = function(match) {
+    return match.str;        
 }
 
 // preserving the original tiddler based implementation.
@@ -227,6 +233,17 @@ FilteringCompletionSource.prototype.complete = function(partial, limit) {
     return this.rank(items, partial, limit);
 }
 
+FilteringCompletionSource.prototype.completed = function(match) {
+    var stringValue = match.str;
+    
+    if (this.template != null && this.template.field === "body") {
+	stringValue = $tw.wiki.getTiddlerText(match.title);
+    }
+
+    // encapsulate in [[]] link.
+    return "[](#" + stringValue + ")";
+}
+
 function PDFOutlineItem(title, destination, level, items) {
     this.title = title;
     this.destination = destination;
@@ -248,16 +265,16 @@ PDFOutlineItem.parse = function(item, level) {
     return new PDFOutlineItem(title, destination, level, childItems);
 }
 
-PDFOutlineItem.prototype.getTitles = function() {
-    var titles = [ this.title ];
+PDFOutlineItem.prototype.getFlattened = function() {
+    var flattened = [ this ];
 
     for (var itemIndex = 0; itemIndex < this.items.length; itemIndex++) {
         var item = this.items[itemIndex];
 
-        titles = titles.concat(item.getTitles());
+        flattened = flattened.concat(item.getFlattened());
     }
 
-    return titles;
+    return flattened;
 }
     
 function PDFOutline(rootItems) {
@@ -273,16 +290,16 @@ function PDFOutline(rootItems) {
     console.log(this.items);
 }
 
-PDFOutline.prototype.getTitles = function() {
-    var titles = [];
+PDFOutline.prototype.getFlattened = function() {
+    var flattened = [];
 
     for (var itemIndex = 0; itemIndex < this.items.length; itemIndex++) {
         var item = this.items[itemIndex];
         
-        titles = titles.concat(item.getTitles());
+        flattened = flattened.concat(item.getFlattened());
     }
 
-    return titles;
+    return flattened;
 }
     
 var PDF_FIELD_NAME = "pdf";
@@ -334,7 +351,7 @@ PDFCompletionSource.prototype.startPDFParsing = function() {
         if (outline != null) {
             this.outline = new PDFOutline(outline);
             console.log(this.outline);
-            console.log(this.outline.getTitles());
+            console.log(this.outline.getFlattened());
         }
     }.bind(this));
 }
@@ -348,24 +365,37 @@ PDFCompletionSource.prototype.complete = function(partial, limit) {
     // "images/graphs".
     // for now just complete against the default PDF with the outline.
 
-    var matchingNames = [];
+    var items = [];
     if (this.outline != null) {
-        matchingNames = matchingNames.concat(this.outline.getTitles());
+        var flattened = this.outline.getFlattened();
+
+        for (var outlineIndex = 0; outlineIndex < flattened.length; outlineIndex++) {
+            var outlineItem = flattened[outlineIndex];
+
+            items.push(new CompletedItem(outlineItem.title, outlineItem, outlineItem.level));
+                
+        }            
     }
 
-    if (matchingNames.length == 0) {
+    if (items.length == 0) {
         return [];
     }
 
-    // speed implications here.
-    var items = [];
-    for (var nameIndex = 0; nameIndex < matchingNames.length; nameIndex++) {
-        items.push(new CompletedItem(matchingNames[nameIndex], null));
-    }
-    
     return this.rank(items, partial, limit);
 }
+
+PDFCompletionSource.prototype.completed = function(match) {
+    var matchItem = match.obj;
+
+    if (match.obj instanceof PDFOutlineItem) {
+        // point this to the named destination: pdfname
+        return "[](" + this.pdfName + "#" + match.obj.destination + ")";
+    }
+
+    return "[](#" + match.str + ")";
+}
     
+
 /**
  * Widget is needed in creating popupNode.
  * - widget.document
@@ -487,11 +517,11 @@ var Completion = function(editWidget, areaNode, param, sibling, offTop, offLeft)
      * Abort pattern and undisplay.
      */
     this._abortPattern = function(displayNode) {
-	this._state = "VOID";
-	this._bestChoices = [];
+	this._state = STATE_VOID;
 	this._idxChoice = -1;
-	this._undisplay( displayNode );
+	this._undisplay(displayNode);
 	this._template = undefined;
+        this.source = null;
     };
     /**
      * Display popupNode at the cursor position in areaNode.
@@ -616,43 +646,71 @@ Completion.prototype.handleKeyup = function(event) {
     var val = this._areaNode.value;   // text in the area
     var key = event.keyCode;
     
-    //DEBUG console.log( "__KEYUP ("+key+") hasI="+this._hasInput );
-    
-    // ESC
-    if (key === KEYCODE_ESCAPE ) {
+
+    if (key === KEYCODE_ESCAPE) {
 	this._abortPattern(this._popNode);
-	//DEBUG this._logStatus( "" );
+        // do we want to return?
+        //return;
     }
 
-    // Check for every template
-    if(this._hasInput && this._state === STATE_VOID) {
-	// check every template's pattern
-	var idT, template;
-	for (idT=0; idT < this.templates.length; idT++) {
-	    template = this.templates[idT];
-	    if (this._lastChar === template.pat[template.pos]) {
-		template.pos += 1;
-		//DEBUG console.log( "__CHECK : pat="+template.pat+" pos="+template.pos );
-		// Pattern totaly matched ?
-		if (template.pos === template.pat.length) {
-		    //DEBUG console.log( "__CHECK => found "+template.pat );
-		    this._state = STATE_PATTERN;
-		    this._template = template;
-                    this.source = this.sources[idT];
+    // something has been entered and we're not locked in "pattern" mode.
+    if (this._hasInput && this._state === STATE_VOID) {
+        for (var templateIndex = 0; templateIndex < this.templates.length; templateIndex++) {
+            var template = this.templates[templateIndex];
 
-                    // this is an interesting choice because we don't know
-                    // how the user will interact e.g. erasing versus backspace
-                    // should invalidate this code. my guess is that this code should
-                    // look _back_ at any given instance to see if they can match a template.
+            console.log("value:");
+            console.log(val);
+
+            console.log("cur pos:")
+            console.log(curPos);
+
+            var matchIndex = curPos - 1;
+            var patternIndex = template.pat.length - 1;
+
+            // probably better matching algorithms.
+            while ((matchIndex >= 0) && (patternIndex >= 0)) {
+                if (val[matchIndex] != template.pat[patternIndex]) {
+                    break;
+                }
+
+                patternIndex--;
+                matchIndex--;
+            }
+
+            if (patternIndex == -1) {
+		this._state = STATE_PATTERN;
+		this._template = template;
+                console.log("matched!");
+                this.source = this.sources[templateIndex];
+                console.log(this.source);
+                // match.
+
+                break;
+            }
+            
+            // if (this._lastChar === template.pat[template.pos]) {
+	    //     template.pos += 1;
+	    //     //DEBUG console.log( "__CHECK : pat="+template.pat+" pos="+template.pos );
+	    //     // Pattern totaly matched ?
+	    //     if (template.pos === template.pat.length) {
+	    //         //DEBUG console.log( "__CHECK => found "+template.pat );
+	    //         this._state = STATE_PATTERN;
+	    //         this._template = template;
+            //         this.source = this.sources[templateIndex];
+
+            //         // this is an interesting choice because we don't know
+            //         // how the user will interact e.g. erasing versus backspace
+            //         // should invalidate this code. my guess is that this code should
+            //         // look _back_ at any given instance to see if they can match a template.
 		    
-		    break; // get out of loop
-		}
-	    }
-	    else {
-		template.pos = 0;
-		//DEBUG console.log( "__CHECK : pat="+template.pat+" pos="+template.pos );
-	    }
-	}
+	    //         break; // get out of loop
+	    //     }
+	    // }
+	    // else {
+	    //     template.pos = 0;
+	    //     //DEBUG console.log( "__CHECK : pat="+template.pat+" pos="+template.pos );
+	    // }            
+        }
     }
     // a pattern
     else if (this._state === STATE_PATTERN || this._state === STATE_SELECT) {
@@ -663,43 +721,38 @@ Completion.prototype.handleKeyup = function(event) {
     	    var selected = this._idxChoice > -1 && this._idxChoice !== this._maxMatch;
 
     	    if (selected) {
-		var temp = this._bestMatches[this._idxChoice];
-		var str = temp.str;
-		if( this._template.field === "body" ) {
-		    str = $tw.wiki.getTiddlerText( temp.title );
-		}
-    		insertInto( this._areaNode,
-			    str,
-			    pattern.start, curPos, this._template );
-		// save this new content
-		this._widget.saveChanges( this._areaNode.value );
+		var match = this._bestMatches[this._idxChoice];
+                var completed = this.source.completed(match);
+                
+    		insertInto(
+                    this._areaNode, completed, pattern.start, curPos, this._template);
+		this._widget.saveChanges(this._areaNode.value);
 	    }
 	    // otherwise take the first choice (if exists)
 	    else if (this._bestMatches.length > 0) {
     		//DEBUG console.log( "   > take first one" );
-		var temp = this._bestMatches[0];
-		var str = temp.str;
-		if (this._template.field === "body") {
-		    str = $tw.wiki.getTiddlerText(temp.title);
-		}
+		var match = this._bestMatches[0];
+
+                // determines what actually gets written.
+                var completed = this.source.completed(match);
                 
     		insertInto(
-                    this._areaNode, str, pattern.start, curPos, this._template);
+                    this._areaNode, completed, pattern.start, curPos, this._template);
 		this._widget.saveChanges(this._areaNode.value);
 	    }
 
-            this._abortPattern( this._popNode );
+            this._abortPattern(this._popNode);
     	}
 	else if (key === KEYCODE_UP && this._hasInput === false) { // up
 	    this._state = STATE_SELECT;
     	    event.preventDefault();
-    	    this._previous( this._popNode );
+    	    this._previous(this._popNode);
     	    //event.stopPropagation();
     	}
     	else if (key === KEYCODE_DOWN && this._hasInput === false) { // down
 	    this._state = STATE_SELECT;
     	    event.preventDefault();
-    	    this._next( this._popNode );
+    	    this._next(this._popNode);
     	    //event.stopPropagation();
     	}
     	else if (pattern) { // pattern changed by keypressed
@@ -812,7 +865,8 @@ var insertInto = function(node, text, posBefore, posAfter, template ) {
     var val = node.value;
     var sStart = template.start !== undefined ? template.start : '[[';
     var sEnd = template.end !== undefined ? template.end : ']]';
-    var newVal = val.slice(0, posBefore) + sStart + text + sEnd + val.slice(posAfter);
+    var newVal = val.slice(0, posBefore) + text + val.slice(posAfter);
+    // sStart + text + sEnd + val.slice(posAfter);
     //console.log("__INSERT s="+sStart+" e="+sEnd);
     //console.log ("__INSERT pb="+posBefore+" pa="+posAfter+" txt="+text);
     //console.log( "NEW VAL = "+newVal );
@@ -821,7 +875,8 @@ var insertInto = function(node, text, posBefore, posAfter, template ) {
     // i.e. could use widget.updateEditor(newVal) from edit-comptext widget.
     //      but how to be sure that cursor is well positionned ?
     node.value = newVal;
-    node.setSelectionRange(posBefore+text.length+sStart.length+sEnd.length, posBefore+text.length+sStart.length+sEnd.length );
+    node.setSelectionRange(posBefore + text.length, posBefore + text.length);
+    //node.setSelectionRange(posBefore+text.length+sStart.length+sEnd.length, posBefore+text.length+sStart.length+sEnd.length );
 };
 /**
  * Add an '\' in front of -\^$*+?.()|[]{}
