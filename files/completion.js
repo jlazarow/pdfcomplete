@@ -324,6 +324,7 @@ function PDFCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, templ
 
     this.document = null;
     this.outline = null;
+    this.resourcesByPage = {};
     
     this.startPDFParsing();
 }
@@ -337,7 +338,10 @@ PDFCompletionSource.prototype.startPDFParsing = function() {
     }
 
     console.log("attempting to parse PDF named " + this.pdfName);
-    pdf.getDocument(PDF_WORKER_PREFIX + "/" + this.pdfName).then(function(document) {
+    pdf.getDocument({
+        url: PDF_WORKER_PREFIX + "/" + this.pdfName,
+        nativeImageDecoderSupport: pdf.NativeImageDecoding.DISPLAY
+    }).then(function(document) {
         console.log("woo, got document");
         console.log(document);
 
@@ -354,6 +358,57 @@ PDFCompletionSource.prototype.startPDFParsing = function() {
             console.log(this.outline.getFlattened());
         }
     }.bind(this));
+
+    //     .then(function() {
+    //     var numberPages = this.document.numPages;
+
+    //     var pagePromises = [];
+    //     for (var pageNumber = 1; pageNumber < numberPages; pageNumber++) {
+    //         console.log("loading resources for page " + pageNumber);
+
+    //         pagePromises.push(this.document.getPage(pageNumber).then(function(page) {
+    //             return page.getOperatorList().then(function(operatorList) {
+    //                 let svgGraphics = new pdf.SVGGraphics(page.commonObjs, page.objs);
+    //                 svgGraphics.embedFonts = true;
+
+    //                 let viewport = page.getViewport({ scale: 1.0, width: 1024, height: 768 });
+    //                 viewport.width = 1024;
+    //                 viewport.height = 768;
+    //                 console.log(viewport);
+    //                 console.log('size: ' + viewport.width + 'x' + viewport.height);
+
+    //                 // now "render" the SVG.
+    //                 return svgGraphics.getSVG(operatorList, viewport).then(function(svg) {
+    //                     return page.getOperatorList()
+    //                 }).then(function(operatorList) {
+    //                     console.log(operatorList);
+    //                     console.log(pdf.OPS.paintJpegXObject);
+    //                     let extractedImages = [];
+    //                     for (let operatorIndex = 0; operatorIndex < operatorList.length; operatorIndex++) {
+    //                         if (operatorList.fnArray[operatorIndex] === pdf.OPS.paintJpegXObject) {
+    //                             let imageInfo = page.objs.get(operatorList.argsArray[operatorIndex][0]);
+    //                             extractedImages.push(imageInfo._src.split('data:image/jpeg;base64,')[1]);
+    //                         }
+    //                     }
+
+    //                     return extractedImages;                        
+    //                 });
+    //             });
+    //         }));
+    //     }
+
+    //     return Promise.all(pagePromises);
+    // }.bind(this)).then(function(imagesPerPage) {
+    //     for (var pageIndex = 0; pageIndex < imagesPerPage.length; pageIndex++) {
+    //         var imagesOfPage = imagesPerPage[pageIndex];
+    //         console.log(imagesOfPage);
+
+    //         this.resourcesByPage[pageIndex] = imagesOfPage;
+    //     }
+    // }.bind(this));
+
+    console.log("attempting to load resources");
+    // also load the resources.
 }
     
 PDFCompletionSource.prototype.complete = function(partial, limit) {
@@ -372,8 +427,7 @@ PDFCompletionSource.prototype.complete = function(partial, limit) {
         for (var outlineIndex = 0; outlineIndex < flattened.length; outlineIndex++) {
             var outlineItem = flattened[outlineIndex];
 
-            items.push(new CompletedItem(outlineItem.title, outlineItem, outlineItem.level));
-                
+            items.push(new CompletedItem(outlineItem.title, outlineItem, outlineItem.level));                
         }            
     }
 
@@ -394,7 +448,71 @@ PDFCompletionSource.prototype.completed = function(match) {
 
     return "[](#" + match.str + ")";
 }
+
+function PDFGraphicSource(wiki, tiddler, caseSensitive, maximumMatches, template) {
+    CompletionSource.call(this, wiki, tiddler, caseSensitive, maximumMatches);
+
+    this.template = template || null;
+
+    if (this.template != null && this.template.mask != null) {
+        this.maskPrefix = this.template.mask;
+        console.log("mask prefix: " + this.maskPrefix);
+    }
+    else {
+        console.log("no mask prefix");
+    }
+
+    // start the process of parsing the default PDF (if there is one).
+    this.pdfName = null;
+    if (PDF_FIELD_NAME in tiddler.fields) {
+        this.pdfName = tiddler.fields[PDF_FIELD_NAME]
+    }
+
+    this.resourcesByPage = {};
+    this.getPDFResources();
+}
+
+PDFGraphicSource.prototype = Object.create(CompletionSource.prototype);
+PDFGraphicSource.prototype.constructor = PDFGraphicSource;
+
+PDFGraphicSource.prototype.getPDFResources = function() {
+    if (this.pdfName == null) {
+        return;
+    }
+
+    console.log("retrieving all resources of pdf: " + this.pdfName);
+
+    // for (var pageIndex = 0; pageIndex < 1; pageIndex++) {
+    //     console.log("loading resources for page " + pageIndex);
+
+    //     $tw.utils.httpRequest({
+    //         url: "/pdf_resources/" + this.pdfName + "/page/" + pageIndex,
+    //         type: "GET",
+    //         callback: function(error, data) {
+    //             if (error)
+    //             {
+    //                 console.log("Failed to retrieve PDF resources for page " + pageIndex + ": " + error.toString());
+    //             }
+    //             else
+    //             {
+    //                 console.log("Successfully retrieved PDF resources for page " + pageIndex);
+    //                 console.log(data);
+    //                 this.resourcesByPage[pageIndex] = data;
+    //             }
+    //         }.bind(this)
+    //     });
+    // }
+
+    console.log(this.resourcesByPage);
+}
     
+PDFGraphicSource.prototype.complete = function(partial, limit) {
+    console.log("PDFGraphicSource.complete()");
+    console.log(partial);
+}
+
+PDFGraphicSource.prototype.completed = function(match) {
+}    
 
 /**
  * Widget is needed in creating popupNode.
@@ -407,7 +525,7 @@ var STATE_PATTERN = "PATTERN";
 var STATE_SELECT = "SELECT";
 
 var DEFAULT_MAX_MATCH = 5;    
-var DEFAULT_MIN_PATTERN_LENGTH = 2;
+var DEFAULT_MIN_PATTERN_LENGTH = 0; // I guess set this to zero for now.
 var DEFAULT_CASE_SENSITIVE = false;
 var DEFAULT_TRIGGER_KEY_COMBO = "^ ";
 
@@ -460,7 +578,13 @@ var Completion = function(editWidget, areaNode, param, sibling, offTop, offLeft)
             this._tiddler,
             false,
             10,
-            new Template("[pdf[", null, "", null, "[pdf[", "]]"))
+            new Template("[pdf[", null, "", null, "[pdf[", "]]")),
+        // new PDFGraphicSource(
+        //     this._wiki,
+        //     this._tiddler,
+        //     false,
+        //     10,
+        //     new Template("[fig[", null, "", null, "[fig[", "]]"))
     ];
         
     this.templates = [];
