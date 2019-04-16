@@ -54,6 +54,7 @@ var pdf = require("$:/plugins/tiddlywiki/pdfjs/pdf.js");
 var pdfworker = require("$:/plugins/tiddlywiki/pdfjs/pdf.worker.js");
 
 var PDF_WORKER_PREFIX = "files";
+var REBUILD = true;
     
 pdf.GlobalWorkerOptions.workerSrc = PDF_WORKER_PREFIX + "/" + "pdf.worker.js";
 
@@ -127,6 +128,8 @@ function CompletionSource(wiki, tiddler, caseSensitive, maximumMatches) {
     this.caseSensitive = caseSensitive;
     this.maximumMatches = maximumMatches;
     this.maskPrefix = null;
+    this.pdf = null;    
+    this.paper = null;    
 }
 
 // should return "CompletedItem[]"
@@ -147,6 +150,7 @@ CompletionSource.prototype.rank = function(completions, partial, limit) {
     var bestMatches = [];
     var otherMatches = []
 
+    console.log(completions);
     for (var completionIndex = 0; completionIndex < completions.length; completionIndex++) {
         var completion = completions[completionIndex];
 	var maskedTitle = completion.title.replace(regexMask, "");
@@ -194,6 +198,14 @@ CompletionSource.prototype.completed = function(match) {
     return match.str;        
 }
 
+CompletionSource.prototype.associatedPDF = function(pdf) {
+    this.pdf = pdf;
+}
+
+CompletionSource.prototype.associatedPaper = function(paper) {
+    this.paper = paper;
+}
+    
 // preserving the original tiddler based implementation.
 // I think this needs a "term"?    
 function FilteringCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, template) {
@@ -300,10 +312,49 @@ PDFOutline.prototype.getFlattened = function() {
     }
 
     return flattened;
+}    
+
+function ServedPDF(name) {
+    this.name = name;
+    this.document = null;
+    this.outline = null;
+    this.title = null;   
 }
-    
-var PDF_FIELD_NAME = "pdf";
-function PDFCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, template) {
+
+ServedPDF.prototype.read = function() {   
+    console.log("attempting to parse PDF named " + this.name);
+    return pdf.getDocument({
+        url: PDF_WORKER_PREFIX + "/" + this.name,
+        nativeImageDecoderSupport: pdf.NativeImageDecoding.DISPLAY
+    }).then(function(document) {
+        console.log("woo, got document");
+        console.log(document);
+
+        this.document = document;
+        return this.document.getOutline();
+    }.bind(this)).then(function(outline) {
+        console.log("woo, got outline");
+        console.log(outline);
+
+        if (outline != null) {
+            this.outline = new PDFOutline(outline);
+            console.log(this.outline);
+            console.log(this.outline.getFlattened());
+        }
+
+        return this.document.getMetadata();
+    }.bind(this)).then(function(metadata) {
+        console.log(metadata);
+        this.title = metadata.info["Title"];        
+        console.log("title is " + this.title);
+
+        return this.title;
+    }.bind(this));
+}
+
+// we should have something that also tries to partially populate it from
+// TiddlyWiki itself.    
+function PDFNameCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, template) {
     CompletionSource.call(this, wiki, tiddler, caseSensitive, maximumMatches);
 
     this.template = template || null;
@@ -316,103 +367,41 @@ function PDFCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, templ
         console.log("no mask prefix");
     }
 
-    // start the process of parsing the default PDF (if there is one).
-    this.pdfName = null;
-    if (PDF_FIELD_NAME in tiddler.fields) {
-        this.pdfName = tiddler.fields[PDF_FIELD_NAME]
-    }
-
-    this.document = null;
-    this.outline = null;
-    this.resourcesByPage = {};
-    
-    this.startPDFParsing();
+    this.references = [];
 }
 
-PDFCompletionSource.prototype = Object.create(CompletionSource.prototype);
-PDFCompletionSource.prototype.constructor = PDFCompletionSource;
+PDFNameCompletionSource.prototype = Object.create(CompletionSource.prototype);
+PDFNameCompletionSource.prototype.constructor = PDFNameCompletionSource;
 
-PDFCompletionSource.prototype.startPDFParsing = function() {
-    if (this.pdfName == null) {
+PDFNameCompletionSource.prototype.associatePaper = function(paper) {
+    this.paper = paper;
+    //this.indexReferences(paper);
+}        
+    
+PDFNameCompletionSource.prototype.indexReferences = function(paper) {
+    var references = paper.references;
+    if (references.length == 0) {
         return;
     }
 
-    console.log("attempting to parse PDF named " + this.pdfName);
-    pdf.getDocument({
-        url: PDF_WORKER_PREFIX + "/" + this.pdfName,
-        nativeImageDecoderSupport: pdf.NativeImageDecoding.DISPLAY
-    }).then(function(document) {
-        console.log("woo, got document");
-        console.log(document);
-
-        this.document = document;
-
-        return this.document.getOutline();
-    }.bind(this)).then(function(outline) {
-        console.log("woo, got outline");
-        console.log(outline);
-
-        if (outline != null) {
-            this.outline = new PDFOutline(outline);
-            console.log(this.outline);
-            console.log(this.outline.getFlattened());
+    for (var referenceIndex = 0; referenceIndex < references.length; refereneIndex++) {
+        var reference = references[referenceIndex];
+        var referenceParts = reference.id.split(":");
+        var referenceType = referenceParts[0];
+        var referenceValue = referenceParts.slice(1).join(":");
+        console.log("ref of type " + referenceType + " value " + referenceValue);
+        var matchingNames = this.wiki.filterTiddlers("[!has[draft.of]field:" + referenceType + "[" + referenceValue + "]]");
+        if (matchingNames.length > 0) {
+            this.references.push(matchingNames[0]);
         }
-    }.bind(this));
+    }
 
-    //     .then(function() {
-    //     var numberPages = this.document.numPages;
-
-    //     var pagePromises = [];
-    //     for (var pageNumber = 1; pageNumber < numberPages; pageNumber++) {
-    //         console.log("loading resources for page " + pageNumber);
-
-    //         pagePromises.push(this.document.getPage(pageNumber).then(function(page) {
-    //             return page.getOperatorList().then(function(operatorList) {
-    //                 let svgGraphics = new pdf.SVGGraphics(page.commonObjs, page.objs);
-    //                 svgGraphics.embedFonts = true;
-
-    //                 let viewport = page.getViewport({ scale: 1.0, width: 1024, height: 768 });
-    //                 viewport.width = 1024;
-    //                 viewport.height = 768;
-    //                 console.log(viewport);
-    //                 console.log('size: ' + viewport.width + 'x' + viewport.height);
-
-    //                 // now "render" the SVG.
-    //                 return svgGraphics.getSVG(operatorList, viewport).then(function(svg) {
-    //                     return page.getOperatorList()
-    //                 }).then(function(operatorList) {
-    //                     console.log(operatorList);
-    //                     console.log(pdf.OPS.paintJpegXObject);
-    //                     let extractedImages = [];
-    //                     for (let operatorIndex = 0; operatorIndex < operatorList.length; operatorIndex++) {
-    //                         if (operatorList.fnArray[operatorIndex] === pdf.OPS.paintJpegXObject) {
-    //                             let imageInfo = page.objs.get(operatorList.argsArray[operatorIndex][0]);
-    //                             extractedImages.push(imageInfo._src.split('data:image/jpeg;base64,')[1]);
-    //                         }
-    //                     }
-
-    //                     return extractedImages;                        
-    //                 });
-    //             });
-    //         }));
-    //     }
-
-    //     return Promise.all(pagePromises);
-    // }.bind(this)).then(function(imagesPerPage) {
-    //     for (var pageIndex = 0; pageIndex < imagesPerPage.length; pageIndex++) {
-    //         var imagesOfPage = imagesPerPage[pageIndex];
-    //         console.log(imagesOfPage);
-
-    //         this.resourcesByPage[pageIndex] = imagesOfPage;
-    //     }
-    // }.bind(this));
-
-    console.log("attempting to load resources");
-    // also load the resources.
+    console.log("resolved references");
+    console.log(this.references);
 }
-    
-PDFCompletionSource.prototype.complete = function(partial, limit) {
-    console.log("PDFCompletionSource.complete()");
+        
+PDFNameCompletionSource.prototype.complete = function(partial, limit) {
+    console.log("PDFNameCompletionSource.complete()");
     console.log(partial);
 
     // this will be a little more complicated. we're interested in:
@@ -422,7 +411,7 @@ PDFCompletionSource.prototype.complete = function(partial, limit) {
 
     var items = [];
     if (this.outline != null) {
-        var flattened = this.outline.getFlattened();
+        var flattened = this.pdf.outline.getFlattened();
 
         for (var outlineIndex = 0; outlineIndex < flattened.length; outlineIndex++) {
             var outlineItem = flattened[outlineIndex];
@@ -431,19 +420,27 @@ PDFCompletionSource.prototype.complete = function(partial, limit) {
         }            
     }
 
-    if (items.length == 0) {
-        return [];
-    }
+    // // each each referenced paper..
+    // console.log("completing " + this.references.length + " references");
+    // for (var referenceIndex = 0; referenceIndex < this.references.length; referenceIndex++) {
+    //     var referenceName = this.references[referenceIndex];
 
-    return this.rank(items, partial, limit);
+    //     items.push(new CompletedItem(referenceName, null, 0));
+    // }
+
+    // if (items.length == 0) {
+    //     return [];
+    // }
+
+    // return this.rank(items, partial, limit);
 }
 
-PDFCompletionSource.prototype.completed = function(match) {
+PDFNameCompletionSource.prototype.completed = function(match) {
     var matchItem = match.obj;
 
     if (match.obj instanceof PDFOutlineItem) {
         // point this to the named destination: pdfname
-        return "[](" + this.pdfName + "#" + match.obj.destination + ")";
+        return "[](" + this.pdf.name + "#" + match.obj.destination + ")";
     }
 
     return "[](#" + match.str + ")";
@@ -573,12 +570,12 @@ var Completion = function(editWidget, areaNode, param, sibling, offTop, offLeft)
             false, // case insensitive,
             5, // maximum matches
     	    new Template("[[", "[all[tiddlers]!is[system]]", "", "title", "[[", "]]")),
-        new PDFCompletionSource(
+        new PDFNameCompletionSource(
             this._wiki,
             this._tiddler,
             false,
             10,
-            new Template("[pdf[", null, "", null, "[pdf[", "]]")),
+            new Template("[name[", null, "", null, "[name[", "]]")),
         // new PDFGraphicSource(
         //     this._wiki,
         //     this._tiddler,
@@ -586,6 +583,56 @@ var Completion = function(editWidget, areaNode, param, sibling, offTop, offLeft)
         //     10,
         //     new Template("[fig[", null, "", null, "[fig[", "]]"))
     ];
+
+    // todo: this will eventually leave this module, but keep it here for now.
+    // start the process of parsing the default PDF (if there is one).
+    
+    // this.pdf = null;
+    // this.paper = null;
+    
+    // var servedPDFPromise = null;
+    // if (PDF_FIELD_NAME in this._tiddler.fields) {
+    //     this.pdf = new ServedPDF(this._tiddler.fields[PDF_FIELD_NAME]);
+    //     console.log("loading PDF with name " + this.pdf.name);
+    //     servedPDFPromise = this.pdf.read();
+    // }
+    // else {
+    //     servedPDFPromise = Promise.resolve(null);
+    // }
+    
+    // servedPDFPromise.then(function() {
+    //     if (this.pdf == null || this.pdf.title == null) {
+    //         return;
+    //     }
+
+    //     if (!(FIELD_PDF_RETRIEVED in this._tiddler.fields) || REBUILD) {
+    //         this.academicAPI.getPaper(this.pdf.title).then(function(papers) {
+    //             let paperPromises = [];
+
+    //             for (let paperIndex = 0; paperIndex < papers.length; paperIndex++) {
+    //                 let paper = papers[paperIndex];
+    //                 console.log(paper);
+
+    //                 paperPromises.push(SemanticScholarAPI.resolve(paper));
+    //             }
+
+    //             return Promise.all(paperPromises);
+    //         }).then(function(papers) {
+    //             // at some point we might get > 1 and choose the "best". for now, pick the first.
+    //             var match = papers[0];
+    //             this._tiddler = AssociatePaperToTiddler(this._wiki, match, this._tiddler);
+    //         }.bind(this));
+    //     }
+
+    //     // only expose the "paper" that can be reconstituted from the tiddler itself.
+    //     this.paper = ParsePaperFromTiddler(this._wiki, this._tiddler, this.pdf.title);
+
+    //     for (var sourceIndex = 0; sourceIndex < this.sources.length; sourceIndex++) {
+    //         var source = this.sources[sourceIndex];
+    //         source.pdf = this.pdf;
+    //         source.paper = this.paper;
+    //     }
+    // }.bind(this));
         
     this.templates = [];
     for (var sourceIndex = 0; sourceIndex < this.sources.length; sourceIndex++) {
@@ -678,7 +725,6 @@ var Completion = function(editWidget, areaNode, param, sibling, offTop, offLeft)
     this._logStatus = function(msg) {
 	console.log("__STATUS: " + this._state + ":-" + msg + "- idx=" + this._idxChoice);
     };
-
 };
 // **************************************************************************
 // ******************************************************************eventCbk

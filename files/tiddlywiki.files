@@ -29,6 +29,27 @@
 				  "module-type": "library"
 			}
 		},{
+			"file": "publication.js",
+			"fields": {
+				  "type": "application/javascript",
+				  "title": "$:/plugins/jlazarow/pdfcomplete/publication.js",
+				  "module-type": "library"
+			}
+		},{
+			"file": "academic-api.js",
+			"fields": {
+				  "type": "application/javascript",
+				  "title": "$:/plugins/jlazarow/pdfcomplete/academic-api.js",
+				  "module-type": "library"
+			}
+		},{
+			"file": "semantic-scholar-api.js",
+			"fields": {
+				  "type": "application/javascript",
+				  "title": "$:/plugins/jlazarow/pdfcomplete/semantic-scholar-api.js",
+				  "module-type": "library"
+			}
+		},{
 			"file": "edit-comptext.css",
 			"fields": {
 				"type": "text/vnd.tiddlywiki",
