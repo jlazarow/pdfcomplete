@@ -49,15 +49,10 @@ TODO : CHECK if needed
 
 // To compute pixel coordinates of cursor
 var getCaretCoordinates = require("$:/plugins/jlazarow/pdfcomplete/cursor-position.js");
-var pdfparser = require("$:/plugins/tiddlywiki/pdfjs/pdf-parser.js");
-var pdf = require("$:/plugins/tiddlywiki/pdfjs/pdf.js");
-var pdfworker = require("$:/plugins/tiddlywiki/pdfjs/pdf.worker.js");
 
-var PDF_WORKER_PREFIX = "files";
-var REBUILD = true;
+// PDF API.
+var pdfapi = require("$:/plugins/jlazarow/pdfserve/pdfapi.js");
     
-pdf.GlobalWorkerOptions.workerSrc = PDF_WORKER_PREFIX + "/" + "pdf.worker.js";
-
 /** 
  * Struct for generic Completion Templates.
  * <ul>
@@ -197,14 +192,6 @@ CompletionSource.prototype.rank = function(completions, partial, limit) {
 CompletionSource.prototype.completed = function(match) {
     return match.str;        
 }
-
-CompletionSource.prototype.associatedPDF = function(pdf) {
-    this.pdf = pdf;
-}
-
-CompletionSource.prototype.associatedPaper = function(paper) {
-    this.paper = paper;
-}
     
 // preserving the original tiddler based implementation.
 // I think this needs a "term"?    
@@ -256,109 +243,14 @@ FilteringCompletionSource.prototype.completed = function(match) {
     return "[](#" + stringValue + ")";
 }
 
-function PDFOutlineItem(title, destination, level, items) {
-    this.title = title;
-    this.destination = destination;
-    this.level = level;
-    this.items = items;
-}
-
-PDFOutlineItem.parse = function(item, level) {
-    var childItems = [];
-
-    for (var itemIndex = 0; itemIndex < item.items.length; itemIndex++) {
-        var childItem = PDFOutlineItem.parse(item.items[itemIndex], level + 1);
-        childItems.push(childItem);
-    }
-
-    var title = item.title;
-    var destination = item.dest;
-
-    return new PDFOutlineItem(title, destination, level, childItems);
-}
-
-PDFOutlineItem.prototype.getFlattened = function() {
-    var flattened = [ this ];
-
-    for (var itemIndex = 0; itemIndex < this.items.length; itemIndex++) {
-        var item = this.items[itemIndex];
-
-        flattened = flattened.concat(item.getFlattened());
-    }
-
-    return flattened;
-}
-    
-function PDFOutline(rootItems) {
-    // recursively read the top level items.
-    this.items = [];
-
-    for (var rootItemIndex = 0; rootItemIndex < rootItems.length; rootItemIndex++) {
-        var item = PDFOutlineItem.parse(rootItems[rootItemIndex], 0);
-        this.items.push(item);
-    }
-
-    console.log("outline:");
-    console.log(this.items);
-}
-
-PDFOutline.prototype.getFlattened = function() {
-    var flattened = [];
-
-    for (var itemIndex = 0; itemIndex < this.items.length; itemIndex++) {
-        var item = this.items[itemIndex];
-        
-        flattened = flattened.concat(item.getFlattened());
-    }
-
-    return flattened;
-}    
-
-function ServedPDF(name) {
-    this.name = name;
-    this.document = null;
-    this.outline = null;
-    this.title = null;   
-}
-
-ServedPDF.prototype.read = function() {   
-    console.log("attempting to parse PDF named " + this.name);
-    return pdf.getDocument({
-        url: PDF_WORKER_PREFIX + "/" + this.name,
-        nativeImageDecoderSupport: pdf.NativeImageDecoding.DISPLAY
-    }).then(function(document) {
-        console.log("woo, got document");
-        console.log(document);
-
-        this.document = document;
-        return this.document.getOutline();
-    }.bind(this)).then(function(outline) {
-        console.log("woo, got outline");
-        console.log(outline);
-
-        if (outline != null) {
-            this.outline = new PDFOutline(outline);
-            console.log(this.outline);
-            console.log(this.outline.getFlattened());
-        }
-
-        return this.document.getMetadata();
-    }.bind(this)).then(function(metadata) {
-        console.log(metadata);
-        this.title = metadata.info["Title"];        
-        console.log("title is " + this.title);
-
-        return this.title;
-    }.bind(this));
-}
-
 // we should have something that also tries to partially populate it from
 // TiddlyWiki itself.    
-function PDFNameCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, template) {
+function PDFNameCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, template, pdf) {
     CompletionSource.call(this, wiki, tiddler, caseSensitive, maximumMatches);
 
     this.template = template || null;
-
+    this.pdf = pdf;
+    
     if (this.template != null && this.template.mask != null) {
         this.maskPrefix = this.template.mask;
         console.log("mask prefix: " + this.maskPrefix);
@@ -366,39 +258,10 @@ function PDFNameCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, t
     else {
         console.log("no mask prefix");
     }
-
-    this.references = [];
 }
 
 PDFNameCompletionSource.prototype = Object.create(CompletionSource.prototype);
 PDFNameCompletionSource.prototype.constructor = PDFNameCompletionSource;
-
-PDFNameCompletionSource.prototype.associatePaper = function(paper) {
-    this.paper = paper;
-    //this.indexReferences(paper);
-}        
-    
-PDFNameCompletionSource.prototype.indexReferences = function(paper) {
-    var references = paper.references;
-    if (references.length == 0) {
-        return;
-    }
-
-    for (var referenceIndex = 0; referenceIndex < references.length; refereneIndex++) {
-        var reference = references[referenceIndex];
-        var referenceParts = reference.id.split(":");
-        var referenceType = referenceParts[0];
-        var referenceValue = referenceParts.slice(1).join(":");
-        console.log("ref of type " + referenceType + " value " + referenceValue);
-        var matchingNames = this.wiki.filterTiddlers("[!has[draft.of]field:" + referenceType + "[" + referenceValue + "]]");
-        if (matchingNames.length > 0) {
-            this.references.push(matchingNames[0]);
-        }
-    }
-
-    console.log("resolved references");
-    console.log(this.references);
-}
         
 PDFNameCompletionSource.prototype.complete = function(partial, limit) {
     console.log("PDFNameCompletionSource.complete()");
@@ -410,7 +273,7 @@ PDFNameCompletionSource.prototype.complete = function(partial, limit) {
     // for now just complete against the default PDF with the outline.
 
     var items = [];
-    if (this.outline != null) {
+    if (this.pdf.outline != null) {
         var flattened = this.pdf.outline.getFlattened();
 
         for (var outlineIndex = 0; outlineIndex < flattened.length; outlineIndex++) {
@@ -432,13 +295,13 @@ PDFNameCompletionSource.prototype.complete = function(partial, limit) {
     //     return [];
     // }
 
-    // return this.rank(items, partial, limit);
+    return this.rank(items, partial, limit);
 }
 
 PDFNameCompletionSource.prototype.completed = function(match) {
     var matchItem = match.obj;
 
-    if (match.obj instanceof PDFOutlineItem) {
+    if (match.obj instanceof pdfapi.PDFOutlineItem) {
         // point this to the named destination: pdfname
         return "[](" + this.pdf.name + "#" + match.obj.destination + ")";
     }
@@ -446,11 +309,12 @@ PDFNameCompletionSource.prototype.completed = function(match) {
     return "[](#" + match.str + ")";
 }
 
-function PDFGraphicSource(wiki, tiddler, caseSensitive, maximumMatches, template) {
+function PaperReferencesCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, template, paper) {
     CompletionSource.call(this, wiki, tiddler, caseSensitive, maximumMatches);
 
     this.template = template || null;
-
+    this.paper = paper;
+    
     if (this.template != null && this.template.mask != null) {
         this.maskPrefix = this.template.mask;
         console.log("mask prefix: " + this.maskPrefix);
@@ -459,58 +323,65 @@ function PDFGraphicSource(wiki, tiddler, caseSensitive, maximumMatches, template
         console.log("no mask prefix");
     }
 
-    // start the process of parsing the default PDF (if there is one).
-    this.pdfName = null;
-    if (PDF_FIELD_NAME in tiddler.fields) {
-        this.pdfName = tiddler.fields[PDF_FIELD_NAME]
-    }
-
-    this.resourcesByPage = {};
-    this.getPDFResources();
+    this.references = [];
+    this.indexReferences(this.paper);
 }
 
-PDFGraphicSource.prototype = Object.create(CompletionSource.prototype);
-PDFGraphicSource.prototype.constructor = PDFGraphicSource;
-
-PDFGraphicSource.prototype.getPDFResources = function() {
-    if (this.pdfName == null) {
+PaperReferencesCompletionSource.prototype = Object.create(CompletionSource.prototype);
+PaperReferencesCompletionSource.prototype.constructor = PaperReferencesCompletionSource;
+    
+PaperReferencesCompletionSource.prototype.indexReferences = function(paper) {
+    var references = paper.references;
+    if (references.length == 0) {
         return;
     }
 
-    console.log("retrieving all resources of pdf: " + this.pdfName);
+    for (var referenceIndex = 0; referenceIndex < references.length; referenceIndex++) {
+        var reference = references[referenceIndex];
+        var referenceParts = reference.id.split(":");
+        var referenceType = referenceParts[0];
+        console.log("ref of type " + referenceType + " value " + reference.id);
+        var matchingNames = this.wiki.filterTiddlers("[!has[draft.of]field:" + referenceType + "[" + reference.id + "]]");
+        if (matchingNames.length > 0) {
+            this.references.push(matchingNames[0]);
+        }
+    }
 
-    // for (var pageIndex = 0; pageIndex < 1; pageIndex++) {
-    //     console.log("loading resources for page " + pageIndex);
+    console.log("resolved references");
+    console.log(this.references);
+}
+        
+PaperReferencesCompletionSource.prototype.complete = function(partial, limit) {
+    console.log("PaperReferencesCompletionSource.complete()");
+    console.log(partial);
 
-    //     $tw.utils.httpRequest({
-    //         url: "/pdf_resources/" + this.pdfName + "/page/" + pageIndex,
-    //         type: "GET",
-    //         callback: function(error, data) {
-    //             if (error)
-    //             {
-    //                 console.log("Failed to retrieve PDF resources for page " + pageIndex + ": " + error.toString());
-    //             }
-    //             else
-    //             {
-    //                 console.log("Successfully retrieved PDF resources for page " + pageIndex);
-    //                 console.log(data);
-    //                 this.resourcesByPage[pageIndex] = data;
-    //             }
-    //         }.bind(this)
-    //     });
-    // }
+    // this will be a little more complicated. we're interested in:
+    // "named destinations" (e.g. outline).
+    // "images/graphs".
+    // for now just complete against the default PDF with the outline.
 
-    console.log(this.resourcesByPage);
+    var items = [];
+
+    // each each referenced paper..
+    console.log("completing " + this.references.length + " references");
+    for (var referenceIndex = 0; referenceIndex < this.references.length; referenceIndex++) {
+        var referenceName = this.references[referenceIndex];
+
+        items.push(new CompletedItem(referenceName, null, 0));
+    }
+
+    if (items.length == 0) {
+        return [];
+    }
+
+    return this.rank(items, partial, limit);
+}
+
+PaperReferencesCompletionSource.prototype.completed = function(match) {
+    var matchItem = match.obj;
+    return "[](#" + match.str + ")";
 }
     
-PDFGraphicSource.prototype.complete = function(partial, limit) {
-    console.log("PDFGraphicSource.complete()");
-    console.log(partial);
-}
-
-PDFGraphicSource.prototype.completed = function(match) {
-}    
-
 /**
  * Widget is needed in creating popupNode.
  * - widget.document
@@ -570,12 +441,12 @@ var Completion = function(editWidget, areaNode, param, sibling, offTop, offLeft)
             false, // case insensitive,
             5, // maximum matches
     	    new Template("[[", "[all[tiddlers]!is[system]]", "", "title", "[[", "]]")),
-        new PDFNameCompletionSource(
-            this._wiki,
-            this._tiddler,
-            false,
-            10,
-            new Template("[name[", null, "", null, "[name[", "]]")),
+        // new PDFNameCompletionSource(
+        //     this._wiki,
+        //     this._tiddler,
+        //     false,
+        //     10,
+        //     new Template("[name[", null, "", null, "[name[", "]]")),
         // new PDFGraphicSource(
         //     this._wiki,
         //     this._tiddler,
@@ -584,56 +455,37 @@ var Completion = function(editWidget, areaNode, param, sibling, offTop, offLeft)
         //     new Template("[fig[", null, "", null, "[fig[", "]]"))
     ];
 
-    // todo: this will eventually leave this module, but keep it here for now.
-    // start the process of parsing the default PDF (if there is one).
-    
-    // this.pdf = null;
-    // this.paper = null;
-    
-    // var servedPDFPromise = null;
-    // if (PDF_FIELD_NAME in this._tiddler.fields) {
-    //     this.pdf = new ServedPDF(this._tiddler.fields[PDF_FIELD_NAME]);
-    //     console.log("loading PDF with name " + this.pdf.name);
-    //     servedPDFPromise = this.pdf.read();
-    // }
-    // else {
-    //     servedPDFPromise = Promise.resolve(null);
-    // }
-    
-    // servedPDFPromise.then(function() {
-    //     if (this.pdf == null || this.pdf.title == null) {
-    //         return;
-    //     }
-
-    //     if (!(FIELD_PDF_RETRIEVED in this._tiddler.fields) || REBUILD) {
-    //         this.academicAPI.getPaper(this.pdf.title).then(function(papers) {
-    //             let paperPromises = [];
-
-    //             for (let paperIndex = 0; paperIndex < papers.length; paperIndex++) {
-    //                 let paper = papers[paperIndex];
-    //                 console.log(paper);
-
-    //                 paperPromises.push(SemanticScholarAPI.resolve(paper));
-    //             }
-
-    //             return Promise.all(paperPromises);
-    //         }).then(function(papers) {
-    //             // at some point we might get > 1 and choose the "best". for now, pick the first.
-    //             var match = papers[0];
-    //             this._tiddler = AssociatePaperToTiddler(this._wiki, match, this._tiddler);
-    //         }.bind(this));
-    //     }
-
-    //     // only expose the "paper" that can be reconstituted from the tiddler itself.
-    //     this.paper = ParsePaperFromTiddler(this._wiki, this._tiddler, this.pdf.title);
-
-    //     for (var sourceIndex = 0; sourceIndex < this.sources.length; sourceIndex++) {
-    //         var source = this.sources[sourceIndex];
-    //         source.pdf = this.pdf;
-    //         source.paper = this.paper;
-    //     }
-    // }.bind(this));
+    // see if any PDF exists.
+    if ("pdf" in this._tiddler.fields) {
+        var pdf = $tw.pdfs.getPDF(this._tiddler.fields.pdf);
+        var paper = $tw.papers.getPaper(this._tiddler.fields.title);
         
+        if (pdf) {
+            console.log("attaching PDF completions");
+            this.sources.push(new PDFNameCompletionSource(
+                this._wiki,
+                this._tiddler,
+                false,
+                10,
+                new Template("[name[", null, "", null, "[name[", "]]"),
+                pdf));
+        }
+        else {
+            console.log("no PDF found");
+        }
+
+        if (paper) {
+            console.log("attaching paper completions");
+            this.sources.push(new PaperReferencesCompletionSource(
+                this._wiki,
+                this._tiddler,
+                false,
+                10,
+                new Template("[ref[", null, "", null, "[ref[", "]]"),
+                paper));
+        }
+    }
+
     this.templates = [];
     for (var sourceIndex = 0; sourceIndex < this.sources.length; sourceIndex++) {
         var source = this.sources[sourceIndex];
