@@ -192,6 +192,15 @@ CompletionSource.prototype.rank = function(completions, partial, limit) {
 CompletionSource.prototype.completed = function(match) {
     return match.str;        
 }
+
+CompletionSource.prototype.createItemNode = function(item, input ) {
+    var text = item.str;
+    var html = input === '' ? text : text.replace(RegExp(regExpEscape(input.trim()), "gi"), "<mark>$&</mark>");
+    return create("li", {
+	innerHTML: html,
+	"patt-selected": "false"
+    });
+};    
     
 // preserving the original tiddler based implementation.
 // I think this needs a "term"?    
@@ -324,11 +333,42 @@ function PaperReferencesCompletionSource(wiki, tiddler, caseSensitive, maximumMa
     }
 
     this.references = [];
+    this.influential = {};
     this.indexReferences(this.paper);
 }
 
 PaperReferencesCompletionSource.prototype = Object.create(CompletionSource.prototype);
 PaperReferencesCompletionSource.prototype.constructor = PaperReferencesCompletionSource;
+
+PaperReferencesCompletionSource.prototype.createItemNode = function(item, input) {
+    var text = item.str;
+    var influential = item.obj;
+
+    var element = document.createElement("li");
+    if (influential) {
+        var influentialSpan = document.createElement("span");
+        influentialSpan.innerHTML = "Highly Influential";
+        influentialSpan.style.borderWidth = "1px";
+        influentialSpan.style.borderStyle = "solid";
+        influentialSpan.style.borderColor = "#dd913f";
+        influentialSpan.style.color = "#dd913f";
+        influentialSpan.style.paddingLeft = "7.5px";
+        influentialSpan.style.paddingRight = "7.5px";
+        influentialSpan.style.marginRight = "6px";
+
+        element.appendChild(influentialSpan);
+    }
+
+    var patternSpan = document.createElement("span");
+    patternSpan.id = "actual-text";
+    patternSpan.innerHTML = input === '' ? text : text.replace(RegExp(regExpEscape(input.trim()), "gi"), "<mark>$&</mark>");
+    element.appendChild(patternSpan);
+    element.setAttribute("patt-selected", "false");
+    
+    return element;
+    
+};    
+    
     
 PaperReferencesCompletionSource.prototype.indexReferences = function(paper) {
     var references = paper.references;
@@ -344,6 +384,7 @@ PaperReferencesCompletionSource.prototype.indexReferences = function(paper) {
         var matchingNames = this.wiki.filterTiddlers("[!has[draft.of]field:" + referenceType + "[" + reference.id + "]]");
         if (matchingNames.length > 0) {
             this.references.push(matchingNames[0]);
+            this.influential[matchingNames[0]] = reference.isInfluential;
         }
     }
 
@@ -367,7 +408,7 @@ PaperReferencesCompletionSource.prototype.complete = function(partial, limit) {
     for (var referenceIndex = 0; referenceIndex < this.references.length; referenceIndex++) {
         var referenceName = this.references[referenceIndex];
 
-        items.push(new CompletedItem(referenceName, null, 0));
+        items.push(new CompletedItem(referenceName, this.influential[referenceName], 0));
     }
 
     if (items.length == 0) {
@@ -426,7 +467,7 @@ var Completion = function(editWidget, areaNode, param, sibling, offTop, offLeft)
     /** Param */
     // maximum nb of match displayed
     this._maxMatch = param.configuration.maxMatch || DEFEAULT_MAX_MATCH;
-    this._minPatLength = param.configuration.minPatLength || DEFAULT_MIN_PATTERN_LENGTH;
+    this._minPatLength = 0; // param.configuration.minPatLength || DEFAULT_MIN_PATTERN_LENGTH;
     this._caseSensitive = param.configuration.caseSensitive || DEFAULT_CASE_SENSITIVE;
     this._triggerKeyMatcher = keyMatchGenerator(param.configuration.triggerKeyCombination || DEFAULT_TRIGGER_KEY_COMBO);
     /** Input information */
@@ -735,7 +776,9 @@ Completion.prototype.handleKeyup = function(event) {
         }
     }
     // a pattern
-    else if (this._state === STATE_PATTERN || this._state === STATE_SELECT) {
+
+    if (this._state === STATE_PATTERN || this._state === STATE_SELECT) {
+        console.log("in pattern mode with min length " + this._minPatLength);
 	// Pattern below cursor : undefined if no pattern
 	var pattern = extractPattern(val, curPos, this._template);
 
@@ -777,8 +820,10 @@ Completion.prototype.handleKeyup = function(event) {
     	    this._next(this._popNode);
     	    //event.stopPropagation();
     	}
-    	else if (pattern) { // pattern changed by keypressed
+    	else if (pattern || (this._minPatLength == 0)) { // pattern changed by keypressed
 	    this._idxChoice = -1;
+
+            pattern = pattern || "";
 
 	    if(pattern.text.length > (this._minPatLength - 1)) {
                 console.log("attempting to complete: " + pattern.text);
@@ -789,11 +834,14 @@ Completion.prototype.handleKeyup = function(event) {
                 //console.log( "BC "+ this._pattern + " => " + choice );
     		if (this._bestMatches.length > 0) {
 		    for (var i = 0; i < this._bestMatches.length; i++) {
-    			this._popNode.appendChild( 
-			    itemHTML(this._bestMatches[i].str, pattern.text));
+                        let currentMatch = this._bestMatches[i];
+                        console.log(this.source);
+    			this._popNode.appendChild(
+                            this.source.createItemNode(currentMatch, pattern.text));
+			//itemHTML(this._bestMatches[i].str, pattern.text));
     		    }
                     
-                    this._display( this._areaNode, this._popNode );			
+                    this._display(this._areaNode, this._popNode);			
     		}
 		else {
                     // still looking for some pattern.
@@ -816,14 +864,14 @@ Completion.prototype.handleKeyup = function(event) {
 /**
  * Create popup element.
  */
-var createPopup = function( widget, node ) {
+var createPopup = function(widget, node) {
     // Insert a special "div" element for poping up
     // Its 'display' property in 'style' control its visibility
     var popupNode = widget.document.createElement("div");
     popupNode.setAttribute( "style", "display:none; position: absolute;");
     popupNode.className = "tc-block-dropdown ect-block-dropdown";
     // Insert the element into the DOM
-    node.parentNode.insertBefore(popupNode,node.nextSibling);
+    node.parentNode.insertBefore(popupNode, node.nextSibling);
     //CHECK the domNodes is a attribute of Widget [widget.js]
     //CHECK this.domNodes.push(popupNode);
     
@@ -882,23 +930,13 @@ var itemHTML = function (text, input ) {
  * - posBefore : where the 'template.pat+pattern' starts
  * - posAfter : where the cursor currently is
  */
-var insertInto = function(node, text, posBefore, posAfter, template ) {
-    //DEBUG console.log( "__INSERT : "+template.pattern+":"+template.filter+":"+template.mask+":"+template.field+":"+template.start+":"+template.end );
+var insertInto = function(node, text, posBefore, posAfter, template) {
     var val = node.value;
     var sStart = template.start !== undefined ? template.start : '[[';
     var sEnd = template.end !== undefined ? template.end : ']]';
     var newVal = val.slice(0, posBefore) + text + val.slice(posAfter);
-    // sStart + text + sEnd + val.slice(posAfter);
-    //console.log("__INSERT s="+sStart+" e="+sEnd);
-    //console.log ("__INSERT pb="+posBefore+" pa="+posAfter+" txt="+text);
-    //console.log( "NEW VAL = "+newVal );
-    // WARN : Directly modifie domNode.value.
-    // Not sure it does not short-circuit other update methods of the domNode....
-    // i.e. could use widget.updateEditor(newVal) from edit-comptext widget.
-    //      but how to be sure that cursor is well positionned ?
     node.value = newVal;
     node.setSelectionRange(posBefore + text.length, posBefore + text.length);
-    //node.setSelectionRange(posBefore+text.length+sStart.length+sEnd.length, posBefore+text.length+sStart.length+sEnd.length );
 };
 /**
  * Add an '\' in front of -\^$*+?.()|[]{}
