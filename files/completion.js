@@ -52,6 +52,8 @@ var getCaretCoordinates = require("$:/plugins/jlazarow/pdfcomplete/cursor-positi
 
 // PDF API.
 var pdfapi = require("$:/plugins/jlazarow/pdfserve/pdfapi.js");
+
+var PAPER_PREFIX = "$:/paper/";    
     
 /** 
  * Struct for generic Completion Templates.
@@ -359,6 +361,23 @@ PaperReferencesCompletionSource.prototype.createItemNode = function(item, input)
         element.appendChild(influentialSpan);
     }
 
+    // missing.
+    if (text.startsWith(PAPER_PREFIX)) {
+        var missingSpan = document.createElement("span");
+        missingSpan.innerHTML = "Missing";
+        missingSpan.style.borderWidth = "1px";
+        missingSpan.style.borderStyle = "solid";
+        missingSpan.style.borderColor = "#bd2031";
+        missingSpan.style.color = "#bd2031";
+        missingSpan.style.paddingLeft = "7.5px";
+        missingSpan.style.paddingRight = "7.5px";
+        missingSpan.style.marginRight = "6px";
+
+        element.appendChild(missingSpan);
+
+        text = text.substring(PAPER_PREFIX.length);
+    }
+
     var patternSpan = document.createElement("span");
     patternSpan.id = "actual-text";
     patternSpan.innerHTML = input === '' ? text : text.replace(RegExp(regExpEscape(input.trim()), "gi"), "<mark>$&</mark>");
@@ -378,10 +397,10 @@ PaperReferencesCompletionSource.prototype.indexReferences = function(paper) {
 
     for (var referenceIndex = 0; referenceIndex < references.length; referenceIndex++) {
         var reference = references[referenceIndex];
-        var referenceParts = reference.id.split(":");
+        var referenceParts = reference.paper.id.split(":");
         var referenceType = referenceParts[0];
-        console.log("ref of type " + referenceType + " value " + reference.id);
-        var matchingNames = this.wiki.filterTiddlers("[!has[draft.of]field:" + referenceType + "[" + reference.id + "]]");
+        console.log("ref of type " + referenceType + " value " + reference.paper.id);
+        var matchingNames = this.wiki.filterTiddlers("[!has[draft.of]field:" + referenceType + "[" + reference.paper.id + "]]");
         if (matchingNames.length > 0) {
             this.references.push(matchingNames[0]);
             this.influential[matchingNames[0]] = reference.isInfluential;
@@ -459,7 +478,8 @@ var Completion = function(editWidget, areaNode, param, sibling, offTop, offLeft)
     // this is a state machine.
     this._state = STATE_VOID;
     this._template = undefined;
-
+    this._matchedPosition = -1;
+    
     /** Best matches */
     this._bestMatches = []; // An array of OptCompletion
     this._idxChoice = -1;
@@ -703,6 +723,23 @@ var KEYCODE_ENTER = 13;
 var KEYCODE_ESCAPE = 27;
 var KEYCODE_UP = 38;
 var KEYCODE_DOWN = 40;
+
+Completion.matchesTemplate = function(template, value, currentPosition) {
+    var matchIndex = currentPosition - 1;
+    var patternIndex = template.pat.length - 1;
+
+    // probably better matching algorithms.
+    while ((matchIndex >= 0) && (patternIndex >= 0)) {
+        if (value[matchIndex] != template.pat[patternIndex]) {
+            return false
+        }
+
+        patternIndex--;
+        matchIndex--;
+    }
+
+    return true;
+}
     
 Completion.prototype.handleKeyup = function(event) {
     var curPos = this._areaNode.selectionStart;  // cursor position
@@ -727,26 +764,14 @@ Completion.prototype.handleKeyup = function(event) {
             console.log("cur pos:")
             console.log(curPos);
 
-            var matchIndex = curPos - 1;
-            var patternIndex = template.pat.length - 1;
-
-            // probably better matching algorithms.
-            while ((matchIndex >= 0) && (patternIndex >= 0)) {
-                if (val[matchIndex] != template.pat[patternIndex]) {
-                    break;
-                }
-
-                patternIndex--;
-                matchIndex--;
-            }
-
-            if (patternIndex == -1) {
+            if (Completion.matchesTemplate(template, val, curPos)) {
 		this._state = STATE_PATTERN;
-		this._template = template;
+	        this._template = template;
+                // hack to fix this for now.
+                this._matchedPosition = curPos;
                 console.log("matched!");
                 this.source = this.sources[templateIndex];
                 console.log(this.source);
-                // match.
 
                 break;
             }
@@ -775,9 +800,16 @@ Completion.prototype.handleKeyup = function(event) {
 	    // }            
         }
     }
-    // a pattern
 
+    // a pattern
     if (this._state === STATE_PATTERN || this._state === STATE_SELECT) {
+        // make sure we're still in the game.
+        if (curPos < this._matchedPosition) {
+            this._abortPattern(this._popNode);
+            this._hasInput = false;
+            return;
+        }
+        
         console.log("in pattern mode with min length " + this._minPatLength);
 	// Pattern below cursor : undefined if no pattern
 	var pattern = extractPattern(val, curPos, this._template);
