@@ -76,12 +76,181 @@ var Template = function(pat, filter, mask, field, start, end) {
  * Struct for storing completion options, as we need to memorise 
  * the titles of the tiddlers when masked and when body must be displayed.
  */
-var OptCompletion = function(title, str, obj) {
-    this.title = title;
-    this.str = str;
-    this.obj = obj || null;
-};
 
+function highlightMatchingText(text, partial) {
+    return partial === "" ? text : text.replace(RegExp(regExpEscape(partial.trim()), "gi"), "<mark>$&</mark>");
+}
+    
+function CompletedItem(title) {
+    this.title = title;
+}
+
+CompletedItem.prototype.getElement = function(partial) {
+    var li = document.createElement("li");
+    var span = document.createElement("span");
+
+    span.innerHTML = highlightMatchingText(this.title, partial);
+    li.setAttribute("patt-selected", "false");
+
+    li.appendChild(span);
+    return li;
+}
+    
+CompletedItem.prototype.getInsertionText = function() {
+    return this.title;
+}
+    
+// indicates that calling wiki.getTiddler will work.
+function CompletedTiddlerItem(title) {
+    CompletedItem.call(this, title);
+
+    this.tiddler = null;
+}
+
+CompletedTiddlerItem.prototype = Object.create(CompletedItem.prototype);
+CompletedTiddlerItem.prototype.constructor = CompletedTiddlerItem;
+
+CompletedTiddlerItem.prototype.getElement = function(partial) {
+    var li = document.createElement("li");
+    var span = document.createElement("span");
+
+    if (this.tiddler == null) {
+        this.tiddler = $tw.wiki.getTiddler(this.title);
+    }
+
+    var displayTitle = this.title;
+
+    // this might break partial highlighting for now.
+    if ("caption" in this.tiddler.fields) {
+        displayTitle = this.tiddler.fields.caption;
+    }
+    
+    span.innerHTML = highlightMatchingText(displayTitle, partial);
+    li.setAttribute("patt-selected", "false");
+    li.appendChild(span);
+    
+    return li;
+}
+
+CompletedTiddlerItem.prototype.getInsertionText = function() {
+    // only support inserting references for now.
+    return "[](#" + this.title + ")";
+}
+    
+function CompletedPDFOutlineItem(pdf, item) {
+    CompletedItem.call(this, item.title);
+
+    this.pdf = pdf;
+    this.item = item;
+}
+
+CompletedPDFOutlineItem.prototype.getInsertionText = function() {
+    return "[](" + this.pdf.name + "#" + this.item.destination + ")";    
+}
+    
+function CompletedPaperReferenceItem(associated) {
+    CompletedItem.call(this, associated.reference.paper.title);
+
+    this.associated = associated;
+}
+    
+CompletedPaperReferenceItem.prototype = Object.create(CompletedItem.prototype);
+CompletedPaperReferenceItem.prototype.constructor = CompletedPaperReferenceItem;
+
+CompletedPaperReferenceItem.prototype.getElement = function(partial) {
+    var text = this.title;
+    var influential = this.associated.reference.isInfluential;
+
+    var element = document.createElement("li");
+    if (influential) {
+        var influentialSpan = document.createElement("span");
+        influentialSpan.innerHTML = "Highly Influential";
+        influentialSpan.style.borderWidth = "1px";
+        influentialSpan.style.borderStyle = "solid";
+        influentialSpan.style.borderColor = "#dd913f";
+        influentialSpan.style.color = "#dd913f";
+        influentialSpan.style.paddingLeft = "7.5px";
+        influentialSpan.style.paddingRight = "7.5px";
+        influentialSpan.style.marginRight = "6px";
+
+        element.appendChild(influentialSpan);
+    }
+
+    // missing.
+    var missing = this.associated.tiddlerTitle.startsWith(PAPER_PREFIX);
+    if (missing) {
+        var missingSpan = document.createElement("span");
+        missingSpan.innerHTML = "Missing";
+        missingSpan.style.borderWidth = "1px";
+        missingSpan.style.borderStyle = "solid";
+        missingSpan.style.borderColor = "#bd2031";
+        missingSpan.style.color = "#bd2031";
+        missingSpan.style.paddingLeft = "7.5px";
+        missingSpan.style.paddingRight = "7.5px";
+        missingSpan.style.marginRight = "6px";
+
+        element.appendChild(missingSpan);
+    }
+
+    var patternSpan = document.createElement("span");
+    patternSpan.id = "actual-text";
+    patternSpan.innerHTML = partial === '' ? text : text.replace(RegExp(regExpEscape(partial.trim()), "gi"), "<mark>$&</mark>");
+    element.appendChild(patternSpan);
+    element.setAttribute("patt-selected", "false");
+    
+    return element;    
+}
+
+CompletedPaperReferenceItem.prototype.getInsertionText = function() {
+    // this will be a bit of a magical endpoint. if the user selects a paper
+    // that is unknown to the wiki, we will download it and add it.
+
+    return "[" + this.title + "](#" + this.associated.tiddlerTitle + ")";
+}
+    
+function SpacerCompletedItem() {
+    CompletedItem.call(this, null);
+}
+
+SpacerCompletedItem.prototype = Object.create(CompletedItem.prototype);
+SpacerCompletedItem.prototype.constructor = SpacerCompletedItem;
+
+SpacerCompletedItem.prototype.getElement = function(partial) {
+    var li = document.createElement("li");
+    var hr = document.createElement("hr");
+    
+    li.setAttribute("patt-selected", "false");
+    li.appendChild(hr);
+        
+    return li;
+}
+
+SpacerCompletedItem.prototype.getInsertionText = function() {
+    throw "spacer items cannot be inserted";
+}
+        
+function EllipsisCompletedItem() {
+    CompletedItem.call(this, "...");
+}
+
+EllipsisCompletedItem.prototype = Object.create(CompletedItem.prototype);
+EllipsisCompletedItem.prototype.constructor = EllipsisCompletedItem;
+
+EllipsisCompletedItem.prototype.getElement = function(partial) {
+    var li = document.createElement("li");
+    var span = document.createElement("span");
+    span.innerHTML = "...";
+    
+    li.setAttribute("patt-selected", "false");
+    li.appendChild(span);
+        
+    return li;
+}
+
+EllipsisCompletedItem.prototype.getInsertionText = function() {
+    throw "ellipsis items cannot be inserted";
+}
+    
 var keyMatchGenerator = function(combination) {
 	let singleMatchGenerator = function(character) {
 		if (character === '^') {
@@ -113,18 +282,11 @@ var keyMatchGenerator = function(combination) {
 	};
 };
 
-function CompletedItem(title, obj, indent) {
-    this.title = title;
-    this.obj = obj;
-    this.indent = indent || 0;
-}
-
 function CompletionSource(wiki, tiddler, caseSensitive, maximumMatches) {
     this.wiki = wiki;
     this.tiddler = tiddler;
     this.caseSensitive = caseSensitive;
     this.maximumMatches = maximumMatches;
-    this.maskPrefix = null;
     this.pdf = null;    
     this.paper = null;    
 }
@@ -140,50 +302,49 @@ CompletionSource.prototype.rank = function(completions, partial, limit) {
     var regexFlag = this.caseSensitive ? "" : "i";
     var regexPattern = RegExp(regExpEscape(partial), regexFlag);
     var regexPatternStart = RegExp("^" + regExpEscape(partial), regexFlag);
-    var regexMask = RegExp(this.maskPrefix || "", "");
 
     var numberMatches = 0;
 
     var bestMatches = [];
     var otherMatches = []
 
-    console.log(completions);
     for (var completionIndex = 0; completionIndex < completions.length; completionIndex++) {
         var completion = completions[completionIndex];
-	var maskedTitle = completion.title.replace(regexMask, "");
+        var title = completion.title;
 
         // good matches _begin_ with the pattern. I think this should just
         // be re-factored to take the "found index" and compute a score from
         // that. leaving like this for now.
- 	if (regexPatternStart.test(maskedTitle)) {
+ 	if (regexPatternStart.test(title)) {
 	    if (numberMatches >= limit) {
                 // I guess reserve the last one for "more".
-		bestMatches.push(new OptCompletion("", "...", null));
+		bestMatches.push(new EllipsisCompletedItem());
 		return bestMatches;
 	    } else {
-		bestMatches.push(new OptCompletion(completion.title, maskedTitle, completion.obj));
+		bestMatches.push(completion);
 		numberMatches += 1;
 	    }
 	}
-	else if (regexPattern.test(maskedTitle)) {
+	else if (regexPattern.test(title)) {
             // then if pattern is found WITHIN the maskedChoice
 	    // added AFTER the choices that starts with pattern
 	    if (numberMatches >= limit) {
                 // finish things off. this should really just be a "break"
-		bestMatches.push(new OptCompletion("", "<hr>", null)); //separator
+		bestMatches.push(completion);
 		bestMatches = bestMatches.concat(otherMatches);
-		bestMatches.push(new OptCompletion("", "...", null));
+		bestMatches.push(new EllipsisCompletedItem());
 
                 return bestMatches;
 	    } else {
-		otherMatches.push(new OptCompletion(completion.title, maskedTitle, completion.obj));
+		otherMatches.push(completion);
+                //otherMatches.push(new CompletionItem(completion.title, maskedTitle, false));
 		numberMatches += 1;
 	    }
 	}
     }
 
     // Here, must add the otherMatches
-    bestMatches.push(new OptCompletion("", "<hr>", null)) ; //separator
+    bestMatches.push(new SpacerCompletedItem());
     bestMatches = bestMatches.concat(otherMatches);
 
     // would rather "return" this. my guess is the previous code might
@@ -191,33 +352,12 @@ CompletionSource.prototype.rank = function(completions, partial, limit) {
     return bestMatches;
 }
 
-CompletionSource.prototype.completed = function(match) {
-    return match.str;        
-}
-
-CompletionSource.prototype.createItemNode = function(item, input ) {
-    var text = item.str;
-    var html = input === '' ? text : text.replace(RegExp(regExpEscape(input.trim()), "gi"), "<mark>$&</mark>");
-    return create("li", {
-	innerHTML: html,
-	"patt-selected": "false"
-    });
-};    
-    
 // preserving the original tiddler based implementation.
 // I think this needs a "term"?    
 function FilteringCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, template) {
     CompletionSource.call(this, wiki, tiddler, caseSensitive, maximumMatches);
 
     this.template = template || null;
-
-    if (this.template != null && this.template.mask != null) {
-        this.maskPrefix = this.template.mask;
-        console.log("mask prefix: " + this.maskPrefix);
-    }
-    else {
-        console.log("no mask prefix");
-    }
 }
 
 FilteringCompletionSource.prototype = Object.create(CompletionSource.prototype);
@@ -237,21 +377,10 @@ FilteringCompletionSource.prototype.complete = function(partial, limit) {
     // speed implications here.
     var items = [];
     for (var nameIndex = 0; nameIndex < matchingNames.length; nameIndex++) {
-        items.push(new CompletedItem(matchingNames[nameIndex], null));
+        items.push(new CompletedTiddlerItem(matchingNames[nameIndex]));
     }
     
     return this.rank(items, partial, limit);
-}
-
-FilteringCompletionSource.prototype.completed = function(match) {
-    var stringValue = match.str;
-    
-    if (this.template != null && this.template.field === "body") {
-	stringValue = $tw.wiki.getTiddlerText(match.title);
-    }
-
-    // encapsulate in [[]] link.
-    return "[](#" + stringValue + ")";
 }
 
 // we should have something that also tries to partially populate it from
@@ -261,14 +390,6 @@ function PDFNameCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, t
 
     this.template = template || null;
     this.pdf = pdf;
-    
-    if (this.template != null && this.template.mask != null) {
-        this.maskPrefix = this.template.mask;
-        console.log("mask prefix: " + this.maskPrefix);
-    }
-    else {
-        console.log("no mask prefix");
-    }
 }
 
 PDFNameCompletionSource.prototype = Object.create(CompletionSource.prototype);
@@ -289,8 +410,7 @@ PDFNameCompletionSource.prototype.complete = function(partial, limit) {
 
         for (var outlineIndex = 0; outlineIndex < flattened.length; outlineIndex++) {
             var outlineItem = flattened[outlineIndex];
-
-            items.push(new CompletedItem(outlineItem.title, outlineItem, outlineItem.level));                
+            items.push(new CompletedPDFOutlineItem(this.pdf, outlineItem));
         }            
     }
 
@@ -309,31 +429,17 @@ PDFNameCompletionSource.prototype.complete = function(partial, limit) {
     return this.rank(items, partial, limit);
 }
 
-PDFNameCompletionSource.prototype.completed = function(match) {
-    var matchItem = match.obj;
-
-    if (match.obj instanceof pdfapi.PDFOutlineItem) {
-        // point this to the named destination: pdfname
-        return "[](" + this.pdf.name + "#" + match.obj.destination + ")";
-    }
-
-    return "[](#" + match.str + ")";
+function AssociatedPaperReference(reference, tiddlerTitle) {
+    this.reference = reference;
+    this.tiddlerTitle = tiddlerTitle;
 }
-
+    
 function PaperReferencesCompletionSource(wiki, tiddler, caseSensitive, maximumMatches, template, paper) {
     CompletionSource.call(this, wiki, tiddler, caseSensitive, maximumMatches);
 
     this.template = template || null;
     this.paper = paper;
     
-    if (this.template != null && this.template.mask != null) {
-        this.maskPrefix = this.template.mask;
-        console.log("mask prefix: " + this.maskPrefix);
-    }
-    else {
-        console.log("no mask prefix");
-    }
-
     this.references = [];
     this.influential = {};
     this.indexReferences(this.paper);
@@ -342,53 +448,6 @@ function PaperReferencesCompletionSource(wiki, tiddler, caseSensitive, maximumMa
 PaperReferencesCompletionSource.prototype = Object.create(CompletionSource.prototype);
 PaperReferencesCompletionSource.prototype.constructor = PaperReferencesCompletionSource;
 
-PaperReferencesCompletionSource.prototype.createItemNode = function(item, input) {
-    var text = item.str;
-    var influential = item.obj;
-
-    var element = document.createElement("li");
-    if (influential) {
-        var influentialSpan = document.createElement("span");
-        influentialSpan.innerHTML = "Highly Influential";
-        influentialSpan.style.borderWidth = "1px";
-        influentialSpan.style.borderStyle = "solid";
-        influentialSpan.style.borderColor = "#dd913f";
-        influentialSpan.style.color = "#dd913f";
-        influentialSpan.style.paddingLeft = "7.5px";
-        influentialSpan.style.paddingRight = "7.5px";
-        influentialSpan.style.marginRight = "6px";
-
-        element.appendChild(influentialSpan);
-    }
-
-    // missing.
-    if (text.startsWith(PAPER_PREFIX)) {
-        var missingSpan = document.createElement("span");
-        missingSpan.innerHTML = "Missing";
-        missingSpan.style.borderWidth = "1px";
-        missingSpan.style.borderStyle = "solid";
-        missingSpan.style.borderColor = "#bd2031";
-        missingSpan.style.color = "#bd2031";
-        missingSpan.style.paddingLeft = "7.5px";
-        missingSpan.style.paddingRight = "7.5px";
-        missingSpan.style.marginRight = "6px";
-
-        element.appendChild(missingSpan);
-
-        text = text.substring(PAPER_PREFIX.length);
-    }
-
-    var patternSpan = document.createElement("span");
-    patternSpan.id = "actual-text";
-    patternSpan.innerHTML = input === '' ? text : text.replace(RegExp(regExpEscape(input.trim()), "gi"), "<mark>$&</mark>");
-    element.appendChild(patternSpan);
-    element.setAttribute("patt-selected", "false");
-    
-    return element;
-    
-};    
-    
-    
 PaperReferencesCompletionSource.prototype.indexReferences = function(paper) {
     var references = paper.references;
     if (references.length == 0) {
@@ -397,19 +456,61 @@ PaperReferencesCompletionSource.prototype.indexReferences = function(paper) {
 
     for (var referenceIndex = 0; referenceIndex < references.length; referenceIndex++) {
         var reference = references[referenceIndex];
+
+        // unsure why this is happening.
+        if (reference.paper == null) {
+            console.log("null paper??");
+            continue;
+        }
+        
         var referenceParts = reference.paper.id.split(":");
         var referenceType = referenceParts[0];
         console.log("ref of type " + referenceType + " value " + reference.paper.id);
         var matchingNames = this.wiki.filterTiddlers("[!has[draft.of]field:" + referenceType + "[" + reference.paper.id + "]]");
+        var matchingName = null;
         if (matchingNames.length > 0) {
-            this.references.push(matchingNames[0]);
-            this.influential[matchingNames[0]] = reference.isInfluential;
+            matchingName = matchingNames[0];
         }
+
+        this.references.push(
+            new AssociatedPaperReference(reference, matchingName));
     }
 
     console.log("resolved references");
     console.log(this.references);
 }
+
+PaperReferencesCompletionSource.prototype.rank = function(completions, partial, limit) {
+    console.log("PaperReferences.rank " + partial);
+    console.log(partial.length);
+    
+    if (partial.length == 0) {
+        limit = limit || this.maximumMatches;
+
+        // sort by "isInfluential".
+        completions = completions.sort(function(a, b) {
+            // sort alphabetical.
+            var aInfluential = a.associated.reference.isInfluential;
+            var bInfluential = b.associated.reference.isInfluential;
+            if (aInfluential && !bInfluential) {
+                return -1;
+            }
+
+            if (bInfluential && !aInfluential) {
+                return 1;
+            }
+
+            return a.title.localeCompare(b.title);
+        });
+
+        var bestMatches = completions.slice(0, limit);
+        bestMatches.push(new EllipsisCompletedItem());
+
+        return bestMatches;
+    }
+ 
+    return CompletionSource.prototype.rank.call(this, completions, partial, limit);
+}    
         
 PaperReferencesCompletionSource.prototype.complete = function(partial, limit) {
     console.log("PaperReferencesCompletionSource.complete()");
@@ -425,9 +526,7 @@ PaperReferencesCompletionSource.prototype.complete = function(partial, limit) {
     // each each referenced paper..
     console.log("completing " + this.references.length + " references");
     for (var referenceIndex = 0; referenceIndex < this.references.length; referenceIndex++) {
-        var referenceName = this.references[referenceIndex];
-
-        items.push(new CompletedItem(referenceName, this.influential[referenceName], 0));
+        items.push(new CompletedPaperReferenceItem(this.references[referenceIndex]));
     }
 
     if (items.length == 0) {
@@ -435,12 +534,7 @@ PaperReferencesCompletionSource.prototype.complete = function(partial, limit) {
     }
 
     return this.rank(items, partial, limit);
-}
-
-PaperReferencesCompletionSource.prototype.completed = function(match) {
-    var matchItem = match.obj;
-    return "[](#" + match.str + ")";
-}
+}    
     
 /**
  * Widget is needed in creating popupNode.
@@ -541,7 +635,7 @@ var Completion = function(editWidget, areaNode, param, sibling, offTop, offLeft)
                 this._wiki,
                 this._tiddler,
                 false,
-                10,
+                25,
                 new Template("[ref[", null, "", null, "[ref[", "]]"),
                 paper));
         }
@@ -813,13 +907,17 @@ Completion.prototype.handleKeyup = function(event) {
         console.log("in pattern mode with min length " + this._minPatLength);
 	// Pattern below cursor : undefined if no pattern
 	var pattern = extractPattern(val, curPos, this._template);
+        if (!pattern) {
+            this._state = STATE_VOID;
+            return;
+        }
 
         if (key === KEYCODE_ENTER) {
     	    var selected = this._idxChoice > -1 && this._idxChoice !== this._maxMatch;
 
     	    if (selected) {
 		var match = this._bestMatches[this._idxChoice];
-                var completed = this.source.completed(match);
+                var completed = match.getInsertionText();
                 
     		insertInto(
                     this._areaNode, completed, pattern.start, curPos, this._template);
@@ -831,7 +929,7 @@ Completion.prototype.handleKeyup = function(event) {
 		var match = this._bestMatches[0];
 
                 // determines what actually gets written.
-                var completed = this.source.completed(match);
+                var completed = match.getInsertionText();
                 
     		insertInto(
                     this._areaNode, completed, pattern.start, curPos, this._template);
@@ -867,10 +965,7 @@ Completion.prototype.handleKeyup = function(event) {
     		if (this._bestMatches.length > 0) {
 		    for (var i = 0; i < this._bestMatches.length; i++) {
                         let currentMatch = this._bestMatches[i];
-                        console.log(this.source);
-    			this._popNode.appendChild(
-                            this.source.createItemNode(currentMatch, pattern.text));
-			//itemHTML(this._bestMatches[i].str, pattern.text));
+    			this._popNode.appendChild(currentMatch.getElement(pattern.text));
     		    }
                     
                     this._display(this._areaNode, this._popNode);			
@@ -937,24 +1032,7 @@ var extractPattern = function( text, pos, template ) {
 	       };
     }
 };
-/**
- * Controls how list items are generated.
- * Function that takes two parameters :
- *  - text : suggestion text
- *  - input : the user’s input
- * Returns : list item. 
- * Generates list items with the user’s input highlighted via <mark>.
- */
-var itemHTML = function (text, input ) {
-    // text si input === ''
-    // otherwise, build RegExp that is global (g) and case insensitive (i)
-    // to replace with <mark>$&</mark> where "$&" is the matched pattern
-    var html = input === '' ? text : text.replace(RegExp(regExpEscape(input.trim()), "gi"), "<mark>$&</mark>");
-    return create("li", {
-	innerHTML: html,
-	"patt-selected": "false"
-    });
-};
+
 /**
  * Insert text into a textarea node, 
  * enclosing in 'template.start..template.end'
